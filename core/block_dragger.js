@@ -200,12 +200,47 @@ Blockly.BlockDragger.prototype.dragBlock = function(e, currentDragDeltaXY) {
   var delta = this.pixelsToWorkspaceUnits_(currentDragDeltaXY);
   var newLoc = goog.math.Coordinate.sum(this.startXY_, delta);
 
+  // Show column guide during drag if applicable (but hide if there's a connection preview)
+  var grid = this.workspace_.getGrid();
+  if (grid && grid.isColumnLayoutEnabled()) {
+    var isTopBlock = !this.draggingBlock_.getParent();
+    // Only show guide for statement blocks (not reporters with outputConnection)
+    var isStatementBlock = !this.draggingBlock_.outputConnection;
+
+    if (isTopBlock && isStatementBlock) {
+      // Check if there's a connection being previewed
+      var hasConnectionPreview = this.draggedConnectionManager_.wouldConnectBlock();
+
+      // Calculate where the block will snap to (X=48, Y snapped to grid)
+      var spacing = grid.getSpacing();
+      var half = spacing / 2;
+      var snappedY = Math.round((newLoc.y - half) / spacing) * spacing + half;
+
+      // Always show guide line, but only show projection when there's no connection preview
+      grid.showColumnGuide(this.draggingBlock_, snappedY, !hasConnectionPreview);
+    }
+  }
+
   this.draggingBlock_.moveDuringDrag(newLoc);
   this.dragIcons_(delta);
 
   this.deleteArea_ = this.workspace_.isDeleteArea(e);
   var isOutside = !this.workspace_.isInsideBlocksArea(e);
-  this.draggedConnectionManager_.update(delta, this.deleteArea_, isOutside);
+
+  // In column layout mode, use projected position for connection detection
+  var connectionDelta = delta;
+  if (grid && grid.isColumnLayoutEnabled()) {
+    var isTopBlock = !this.draggingBlock_.getParent();
+    var isStatementBlock = !this.draggingBlock_.outputConnection;
+
+    if (isTopBlock && isStatementBlock) {
+      // Calculate delta based on projected position (X=48) instead of actual position
+      var projectedLoc = grid.applyColumnLayout(newLoc, true);
+      connectionDelta = goog.math.Coordinate.difference(projectedLoc, this.startXY_);
+    }
+  }
+
+  this.draggedConnectionManager_.update(connectionDelta, this.deleteArea_, isOutside);
   if (isOutside !== this.wasOutside_) {
     this.fireDragOutsideEvent_(isOutside);
     this.wasOutside_ = isOutside;
@@ -234,6 +269,19 @@ Blockly.BlockDragger.prototype.endBlockDrag = function(e, currentDragDeltaXY) {
 
   var delta = this.pixelsToWorkspaceUnits_(currentDragDeltaXY);
   var newLoc = goog.math.Coordinate.sum(this.startXY_, delta);
+
+  // Apply column layout constraints to final position
+  var grid = this.workspace_.getGrid();
+  if (grid && grid.isColumnLayoutEnabled()) {
+    var isTopBlock = !this.draggingBlock_.getParent();
+    // Only constrain statement blocks (not reporters with outputConnection)
+    var isStatementBlock = !this.draggingBlock_.outputConnection;
+
+    if (isTopBlock && isStatementBlock) {
+      newLoc = grid.applyColumnLayout(newLoc, true);
+    }
+  }
+
   this.draggingBlock_.moveOffDragSurface_(newLoc);
 
   // Scratch-specific: note possible illegal definition deletion for rollback below.
@@ -246,7 +294,9 @@ Blockly.BlockDragger.prototype.endBlockDrag = function(e, currentDragDeltaXY) {
   var deleted = this.maybeDeleteBlock_();
   if (!deleted) {
     // These are expensive and don't need to be done if we're deleting.
-    this.draggingBlock_.moveConnections_(delta.x, delta.y);
+    // Calculate actual delta based on constrained position
+    var actualDelta = goog.math.Coordinate.difference(newLoc, this.startXY_);
+    this.draggingBlock_.moveConnections_(actualDelta.x, actualDelta.y);
     this.draggingBlock_.setDragging(false);
     this.fireMoveEvent_();
     if (this.draggedConnectionManager_.wouldConnectBlock()) {
@@ -265,6 +315,21 @@ Blockly.BlockDragger.prototype.endBlockDrag = function(e, currentDragDeltaXY) {
         'blocklyToolboxGrab';
     toolbox.removeStyle(style);
   }
+
+  // Hide column guide after drag
+  var grid = this.workspace_.getGrid();
+  if (grid && grid.isColumnLayoutEnabled()) {
+    grid.hideColumnGuide();
+
+    // Auto cleanup if enabled and block was not deleted
+    if (!deleted && grid.shouldAutoCleanup()) {
+      var ws = this.workspace_;
+      setTimeout(function() {
+        ws.cleanUp();
+      }, 100);
+    }
+  }
+
   Blockly.Events.setGroup(false);
 
   if (isOutside) {

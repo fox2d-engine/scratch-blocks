@@ -82,6 +82,27 @@ Blockly.Grid = function(pattern, options) {
    * @private
    */
   this.snapToGrid_ = options['snap'];
+
+  /**
+   * Whether to enable column layout mode (vertical single-column layout).
+   * @type {boolean}
+   * @private
+   */
+  this.columnLayoutMode_ = options['columnLayoutMode'] || true;
+
+  /**
+   * Whether to automatically clean up (re-sort) blocks after drag.
+   * @type {boolean}
+   * @private
+   */
+  this.autoCleanup_ = options['autoCleanup'] || false;
+
+  /**
+   * The SVG group for column layout visual guides.
+   * @type {SVGElement}
+   * @private
+   */
+  this.columnGuideGroup_ = true;
 };
 
 /**
@@ -98,6 +119,10 @@ Blockly.Grid.prototype.scale_ = 1;
  */
 Blockly.Grid.prototype.dispose = function() {
   this.gridPattern_ = null;
+  if (this.columnGuideGroup_) {
+    goog.dom.removeNode(this.columnGuideGroup_);
+    this.columnGuideGroup_ = null;
+  }
 };
 
 /**
@@ -225,3 +250,147 @@ Blockly.Grid.createDom = function(rnd, gridOptions, defs) {
   }
   return gridPattern;
 };
+
+/**
+ * Check if column layout mode is enabled.
+ * @return {boolean} True if column layout mode is enabled.
+ * @package
+ */
+Blockly.Grid.prototype.isColumnLayoutEnabled = function() {
+  return this.columnLayoutMode_;
+};
+
+
+/**
+ * Check if auto cleanup is enabled.
+ * @return {boolean} True if auto cleanup is enabled.
+ * @package
+ */
+Blockly.Grid.prototype.shouldAutoCleanup = function() {
+  return this.autoCleanup_;
+};
+
+/**
+ * Set the SVG group for column layout visual guides.
+ * @param {SVGElement} group The SVG group element.
+ * @package
+ */
+Blockly.Grid.prototype.setColumnGuideGroup = function(group) {
+  this.columnGuideGroup_ = group;
+};
+
+/**
+ * Apply column layout constraints to a coordinate.
+ * This forces the X coordinate to the fixed column position for top-level blocks.
+ * @param {!goog.math.Coordinate} coord The coordinate to constrain.
+ * @param {boolean} isTopBlock Whether this is a top-level block.
+ * @return {!goog.math.Coordinate} The constrained coordinate.
+ * @package
+ */
+Blockly.Grid.prototype.applyColumnLayout = function(coord, isTopBlock) {
+  if (!this.columnLayoutMode_ || !isTopBlock) {
+    return coord;
+  }
+
+  // Force X coordinate to the fixed column position (48px)
+  return new goog.math.Coordinate(48, coord.y);
+};
+
+/**
+ * Show visual guide for column layout with projection.
+ * Displays a vertical line at the column position and optionally a projection showing where the block will snap.
+ * @param {Blockly.BlockSvg} block The block being dragged.
+ * @param {number} targetY The Y position where the block will be placed.
+ * @param {boolean=} opt_showProjection Whether to show the projection shadow (default true).
+ * @package
+ */
+Blockly.Grid.prototype.showColumnGuide = function(block, targetY, opt_showProjection) {
+  if (!this.columnLayoutMode_ || !this.columnGuideGroup_) {
+    return;
+  }
+
+  var showProjection = opt_showProjection !== false;  // Default to true
+
+  // Remove existing guide elements
+  while (this.columnGuideGroup_.firstChild) {
+    this.columnGuideGroup_.removeChild(this.columnGuideGroup_.firstChild);
+  }
+
+  // Show projection with gradient shadow effect only if requested
+  if (showProjection && block && targetY !== undefined) {
+    var size = block.getHeightWidth();
+
+    // Create gradient definition for shadow effect
+    var gradientId = 'columnProjectionGradient_' + Blockly.utils.genUid();
+    var defs = this.columnGuideGroup_.ownerDocument.querySelector('defs');
+    if (!defs) {
+      defs = Blockly.utils.createSvgElement('defs', {},
+        this.columnGuideGroup_.ownerSVGElement);
+    }
+
+    var gradient = Blockly.utils.createSvgElement('linearGradient', {
+      'id': gradientId,
+      'x1': '0%',
+      'y1': '0%',
+      'x2': '100%',
+      'y2': '0%'
+    }, defs);
+
+    Blockly.utils.createSvgElement('stop', {
+      'offset': '0%',
+      'stop-color': '#2c5aa0',
+      'stop-opacity': '0'
+    }, gradient);
+
+    Blockly.utils.createSvgElement('stop', {
+      'offset': '50%',
+      'stop-color': '#2c5aa0',
+      'stop-opacity': '0.5'
+    }, gradient);
+
+    Blockly.utils.createSvgElement('stop', {
+      'offset': '100%',
+      'stop-color': '#2c5aa0',
+      'stop-opacity': '0'
+    }, gradient);
+
+    // Create wider shadow layer (outer)
+    var shadow = Blockly.utils.createSvgElement('line', {
+      'x1': 48,
+      'y1': targetY,
+      'x2': 48,
+      'y2': targetY + size.height,
+      'stroke': 'url(#' + gradientId + ')',
+      'stroke-width': 20,
+      'stroke-linecap': 'round'
+    }, this.columnGuideGroup_);
+
+    // Create sharper projection line (inner)
+    var projection = Blockly.utils.createSvgElement('line', {
+      'x1': 48,
+      'y1': targetY,
+      'x2': 48,
+      'y2': targetY + size.height,
+      'stroke': '#2c5aa0',
+      'stroke-width': 6,
+      'stroke-linecap': 'round',
+      'opacity': 0.4
+    }, this.columnGuideGroup_);
+  }
+};
+
+/**
+ * Hide visual guide for column layout.
+ * @package
+ */
+Blockly.Grid.prototype.hideColumnGuide = function() {
+  if (!this.columnGuideGroup_) {
+    return;
+  }
+
+  // Remove all guide lines
+  while (this.columnGuideGroup_.firstChild) {
+    this.columnGuideGroup_.removeChild(this.columnGuideGroup_.firstChild);
+  }
+};
+

@@ -121,6 +121,39 @@ Blockly.WorkspaceSvg = function(options, opt_blockDragSurface, opt_wsDragSurface
   this.initialProcedureReturnTypes_ = null;
   this.procedureReturnChangeTimeout_ = null;
   this.checkProcedureReturnAfterGesture_ = false;
+
+  /**
+   * Auto-layout configuration
+   * @type {boolean}
+   * @private
+   */
+  this.autoLayoutEnabled_ = options.autoLayout !== false; // Default enabled
+
+  /**
+   * Auto-layout debounce timer
+   * @type {?number}
+   * @private
+   */
+  this.autoLayoutTimer_ = null;
+
+  /**
+   * Auto-layout debounce delay in milliseconds
+   * @type {number}
+   * @private
+   */
+  this.autoLayoutDelay_ = options.autoLayoutDelay || 200;
+
+  /**
+   * Auto-layout change listener function
+   * @type {?Function}
+   * @private
+   */
+  this.autoLayoutListener_ = null;
+
+  // Setup auto-layout listener if enabled
+  if (this.autoLayoutEnabled_) {
+    this.initAutoLayout_();
+  }
 };
 goog.inherits(Blockly.WorkspaceSvg, Blockly.Workspace);
 
@@ -458,6 +491,9 @@ Blockly.WorkspaceSvg.prototype.createDom = function(opt_backgroundClass) {
   this.svgBlockCanvas_ = Blockly.utils.createSvgElement('g',
       {'class': 'blocklyBlockCanvas'}, this.svgGroup_, this);
   /** @type {SVGElement} */
+  this.svgColumnGuideCanvas_ = Blockly.utils.createSvgElement('g',
+      {'class': 'blocklyColumnGuideCanvas'}, this.svgGroup_, this);
+  /** @type {SVGElement} */
   this.svgBubbleCanvas_ = Blockly.utils.createSvgElement('g',
       {'class': 'blocklyBubbleCanvas'}, this.svgGroup_, this);
   var bottom = Blockly.Scrollbar.scrollbarThickness;
@@ -491,6 +527,10 @@ Blockly.WorkspaceSvg.prototype.createDom = function(opt_backgroundClass) {
   }
   if (this.grid_) {
     this.grid_.update(this.scale);
+    // Set column guide group for column layout visual feedback
+    if (this.svgColumnGuideCanvas_) {
+      this.grid_.setColumnGuideGroup(this.svgColumnGuideCanvas_);
+    }
   }
   this.recordCachedAreas();
   return this.svgGroup_;
@@ -503,6 +543,10 @@ Blockly.WorkspaceSvg.prototype.createDom = function(opt_backgroundClass) {
 Blockly.WorkspaceSvg.prototype.dispose = function() {
   // Stop rerendering.
   this.rendered = false;
+
+  // Cleanup auto-layout
+  this.cleanupAutoLayout_();
+
   if (this.currentGesture_) {
     this.currentGesture_.cancel();
   }
@@ -516,6 +560,7 @@ Blockly.WorkspaceSvg.prototype.dispose = function() {
     this.svgGroup_ = null;
   }
   this.svgBlockCanvas_ = null;
+  this.svgColumnGuideCanvas_ = null;
   this.svgBubbleCanvas_ = null;
   if (this.toolbox_) {
     this.toolbox_.dispose();
@@ -874,6 +919,7 @@ Blockly.WorkspaceSvg.prototype.translate = function(x, y) {
     var translation = 'translate(' + x + ',' + y + ') ' +
         'scale(' + this.scale + ')';
     this.svgBlockCanvas_.setAttribute('transform', translation);
+    this.svgColumnGuideCanvas_.setAttribute('transform', translation);
     this.svgBubbleCanvas_.setAttribute('transform', translation);
   }
   // Now update the block drag surface if we're using one.
@@ -902,6 +948,7 @@ Blockly.WorkspaceSvg.prototype.resetDragSurface = function() {
   var translation = 'translate(' + trans.x + ',' + trans.y + ') ' +
       'scale(' + this.scale + ')';
   this.svgBlockCanvas_.setAttribute('transform', translation);
+  this.svgColumnGuideCanvas_.setAttribute('transform', translation);
   this.svgBubbleCanvas_.setAttribute('transform', translation);
 };
 
@@ -1506,19 +1553,254 @@ Blockly.WorkspaceSvg.prototype.getBlocksBoundingBox = function() {
 };
 
 /**
+ * Initialize auto-layout by setting up event listeners
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.initAutoLayout_ = function() {
+  var workspace = this;
+
+  // Create the event listener function
+  this.autoLayoutListener_ = function(event) {
+    // Only respond to certain event types
+    if (!event || event.isUiEvent) {
+      return;
+    }
+
+    // Events that should trigger auto-layout:
+    // - CREATE: New block added
+    // - DELETE: Block removed
+    // - END_DRAG: Block drag ended (covers all cases: moving, connecting, etc.)
+    var shouldLayout = false;
+
+    if (event.type === Blockly.Events.CREATE ||
+        event.type === Blockly.Events.DELETE ||
+        event.type === Blockly.Events.END_DRAG) {
+      shouldLayout = true;
+    }
+
+    if (shouldLayout) {
+      workspace.scheduleAutoLayout_();
+    }
+  };
+
+  // Add the listener to the workspace
+  this.addChangeListener(this.autoLayoutListener_);
+};
+
+/**
+ * Cleanup auto-layout by removing event listeners
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.cleanupAutoLayout_ = function() {
+  if (this.autoLayoutListener_) {
+    this.removeChangeListener(this.autoLayoutListener_);
+    this.autoLayoutListener_ = null;
+  }
+
+  // Clear any pending timer
+  if (this.autoLayoutTimer_) {
+    clearTimeout(this.autoLayoutTimer_);
+    this.autoLayoutTimer_ = null;
+  }
+};
+
+/**
+ * Schedule auto-layout with debouncing
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.scheduleAutoLayout_ = function() {
+  if (!this.autoLayoutEnabled_ || this.isFlyout || this.isMutator) {
+    return;
+  }
+
+  // Clear existing timer
+  if (this.autoLayoutTimer_) {
+    clearTimeout(this.autoLayoutTimer_);
+  }
+
+  // Schedule new layout
+  var workspace = this;
+  this.autoLayoutTimer_ = setTimeout(function() {
+    workspace.autoLayoutTimer_ = null;
+    workspace.performAutoLayout_();
+  }, this.autoLayoutDelay_);
+};
+
+/**
+ * Perform auto-layout (internal method)
+ * @param {boolean=} opt_forceXAlign Whether to force X alignment (for target switch)
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.performAutoLayout_ = function(opt_forceXAlign) {
+  if (!this.autoLayoutEnabled_ || this.isFlyout || this.isMutator) {
+    return;
+  }
+
+  // Don't auto-layout while dragging
+  if (this.isDragging()) {
+    return;
+  }
+
+  // Perform auto-layout - arrange statement blocks
+  this.arrangeStatementBlocks_(opt_forceXAlign);
+};
+
+/**
+ * Arrange statement blocks in a column without affecting reporters
+ * This respects user spacing - only prevents overlaps, doesn't force uniform spacing
+ * Like blank lines in a text editor, users can keep extra space if they want
+ * @param {boolean=} opt_forceXAlign Whether to force X alignment (for target switch)
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.arrangeStatementBlocks_ = function(opt_forceXAlign) {
+  this.setResizesEnabled(false);
+  Blockly.Events.setGroup(true);
+
+  var topBlocks = this.getTopBlocks(true);
+  var grid = this.getGrid();
+  var shouldAlignToColumn = grid && grid.isColumnLayoutEnabled();
+  var minSpacing = Blockly.BlockSvg.MIN_BLOCK_Y;
+  var forceXAlign = opt_forceXAlign || false;
+
+  // Two modes: cleanUp-style (forceXAlign) vs gentle layout (normal)
+  var cursorY = 0; // For cleanUp-style: next block position
+  var minRequiredY = 0; // For gentle layout: minimum Y to avoid overlaps
+
+  for (var i = 0; i < topBlocks.length; i++) {
+    var block = topBlocks[i];
+
+    // Skip reporter blocks (round/hexagonal blocks)
+    if (block.outputConnection) {
+      continue;
+    }
+
+    var xy = block.getRelativeToSurfaceXY();
+    var blockHeight = block.getHeightWidth().height;
+
+    if (shouldAlignToColumn) {
+      if (forceXAlign) {
+        // CleanUp-style: force tight layout from top (for sprite switching)
+        var columnX = 48; // Column layout X position
+        var deltaX = columnX - xy.x;
+        var deltaY = cursorY - xy.y;
+
+        // Move to column position and compact Y layout
+        block.moveBy(deltaX, deltaY);
+        block.snapToGrid();
+
+        // Update cursor for next block
+        xy = block.getRelativeToSurfaceXY();
+        cursorY = xy.y + blockHeight + minSpacing;
+      } else {
+        // Gentle layout: only prevent overlaps, preserve user spacing
+        var deltaY = 0;
+        if (xy.y < minRequiredY) {
+          deltaY = minRequiredY - xy.y;
+        }
+
+        if (Math.abs(deltaY) > 1) {
+          block.moveBy(0, deltaY);
+          block.snapToGrid();
+          // Update position after move
+          xy = block.getRelativeToSurfaceXY();
+        }
+
+        minRequiredY = xy.y + blockHeight + minSpacing;
+      }
+    } else {
+      // Default layout: always align to left column and prevent vertical overlaps
+      var deltaX = 0 - xy.x;
+      var deltaY = 0;
+
+      // Only adjust Y if overlapping
+      if (xy.y < minRequiredY) {
+        deltaY = minRequiredY - xy.y;
+      }
+
+      // Move block if necessary
+      if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
+        block.moveBy(deltaX, deltaY);
+        block.snapToGrid();
+        // Update position after move
+        xy = block.getRelativeToSurfaceXY();
+      }
+
+      // Update minimum required Y for next block
+      minRequiredY = xy.y + blockHeight + minSpacing;
+    }
+  }
+
+  Blockly.Events.setGroup(false);
+  this.setResizesEnabled(true);
+};
+
+/**
+ * Enable or disable auto-layout
+ * @param {boolean} enabled Whether to enable auto-layout
+ */
+Blockly.WorkspaceSvg.prototype.setAutoLayoutEnabled = function(enabled) {
+  if (this.autoLayoutEnabled_ === enabled) {
+    return; // No change
+  }
+
+  this.autoLayoutEnabled_ = enabled;
+
+  if (enabled) {
+    // Initialize and trigger layout
+    this.initAutoLayout_();
+    this.scheduleAutoLayout_();
+  } else {
+    // Cleanup listeners
+    this.cleanupAutoLayout_();
+  }
+};
+
+/**
+ * Check if auto-layout is enabled
+ * @return {boolean} Whether auto-layout is enabled
+ */
+Blockly.WorkspaceSvg.prototype.isAutoLayoutEnabled = function() {
+  return this.autoLayoutEnabled_;
+};
+
+
+/**
  * Clean up the workspace by ordering all the blocks in a column.
  */
 Blockly.WorkspaceSvg.prototype.cleanUp = function() {
   this.setResizesEnabled(false);
   Blockly.Events.setGroup(true);
   var topBlocks = this.getTopBlocks(true);
+
+  // Get grid settings for column layout
+  var grid = this.getGrid();
+
   var cursorY = 0;
   for (var i = 0, block; block = topBlocks[i]; i++) {
     var xy = block.getRelativeToSurfaceXY();
-    block.moveBy(-xy.x, cursorY - xy.y);
-    block.snapToGrid();
-    cursorY = block.getRelativeToSurfaceXY().y +
-        block.getHeightWidth().height + Blockly.BlockSvg.MIN_BLOCK_Y;
+
+    // In column layout mode, only align statement blocks (not reporters)
+    var isStatementBlock = !block.outputConnection;
+    var shouldAlignToColumn = grid && grid.isColumnLayoutEnabled() && isStatementBlock;
+    var targetX = isStatementBlock ? 0 : xy.x;
+
+    // Only move statement blocks vertically in column mode
+    if (shouldAlignToColumn) {
+      // Move to approximate position first, then let snapToGrid handle precise alignment
+      block.moveBy(0, cursorY - xy.y);
+      // Call snapToGrid() to ensure column alignment is exact
+      block.snapToGrid();
+
+      cursorY = block.getRelativeToSurfaceXY().y +
+          block.getHeightWidth().height + Blockly.BlockSvg.MIN_BLOCK_Y;
+    } else if (isStatementBlock) {
+      // Default cleanup behavior for non-column mode statement blocks
+      block.moveBy(targetX - xy.x, cursorY - xy.y);
+      block.snapToGrid();
+      cursorY = block.getRelativeToSurfaceXY().y +
+          block.getHeightWidth().height + Blockly.BlockSvg.MIN_BLOCK_Y;
+    }
+    // Reporter blocks are not moved by cleanUp
   }
   Blockly.Events.setGroup(false);
   this.setResizesEnabled(true);
@@ -2053,6 +2335,12 @@ Blockly.WorkspaceSvg.getContentDimensionsBounded_ = function(ws, svgSize) {
 
   var top = Math.min(content.top - halfHeight, content.bottom - viewHeight);
   var bottom = Math.max(content.bottom + halfHeight, content.top + viewHeight);
+
+  // In column layout mode, prevent content from extending into negative X coordinates
+  var grid = ws.getGrid();
+  if (grid && grid.isColumnLayoutEnabled()) {
+    left = Math.max(left, 0);
+  }
 
   var dimensions = {
     left: left,

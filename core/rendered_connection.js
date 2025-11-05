@@ -103,6 +103,17 @@ Blockly.RenderedConnection.prototype.bumpAwayFrom_ = function(staticConnection) 
   if (rootBlock.RTL) {
     dx = -dx;
   }
+
+  // In column layout mode, only bump in Y direction for statement blocks
+  var grid = rootBlock.workspace.getGrid();
+  if (grid && grid.isColumnLayoutEnabled()) {
+    var isStatementBlock = !rootBlock.outputConnection;
+    if (isStatementBlock) {
+      // Don't bump in X direction - keep blocks aligned to column
+      dx = 0;
+    }
+  }
+
   rootBlock.moveBy(dx, dy);
   selected || rootBlock.removeSelect();
 };

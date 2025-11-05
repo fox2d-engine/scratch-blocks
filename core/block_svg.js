@@ -511,11 +511,38 @@ Blockly.BlockSvg.prototype.snapToGrid = function() {
   if (!grid || !grid.shouldSnap()) {
     return;  // Config says no snapping.
   }
-  var spacing = grid.getSpacing();
-  var half = spacing / 2;
+
   var xy = this.getRelativeToSurfaceXY();
-  var dx = Math.round((xy.x - half) / spacing) * spacing + half - xy.x;
-  var dy = Math.round((xy.y - half) / spacing) * spacing + half - xy.y;
+  var dx, dy;
+
+  // Column layout mode: snap statement blocks to column X
+  if (grid.isColumnLayoutEnabled()) {
+    var isStatementBlock = !this.outputConnection;
+
+    if (isStatementBlock) {
+      // Snap X to fixed column position (48px)
+      var columnX = 48;
+      dx = columnX - xy.x;
+
+      // Snap Y to grid
+      var spacing = grid.getSpacing();
+      var half = spacing / 2;
+      dy = Math.round((xy.y - half) / spacing) * spacing + half - xy.y;
+    } else {
+      // Reporter blocks: normal grid snapping
+      var spacing = grid.getSpacing();
+      var half = spacing / 2;
+      dx = Math.round((xy.x - half) / spacing) * spacing + half - xy.x;
+      dy = Math.round((xy.y - half) / spacing) * spacing + half - xy.y;
+    }
+  } else {
+    // Normal grid snapping
+    var spacing = grid.getSpacing();
+    var half = spacing / 2;
+    dx = Math.round((xy.x - half) / spacing) * spacing + half - xy.x;
+    dy = Math.round((xy.y - half) / spacing) * spacing + half - xy.y;
+  }
+
   dx = Math.round(dx);
   dy = Math.round(dy);
   if (dx != 0 || dy != 0) {

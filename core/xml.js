@@ -412,6 +412,15 @@ Blockly.Xml.clearWorkspaceAndLoadFromXml = function(xml, workspace) {
   var blockIds = Blockly.Xml.domToWorkspace(xml, workspace);
   workspace.setResizesEnabled(true);
   workspace.setToolboxRefreshEnabled(true);
+
+  // Trigger auto-layout with X alignment after loading workspace from XML
+  // This ensures blocks are properly aligned when switching sprites
+  if (workspace.performAutoLayout_) {
+    setTimeout(function() {
+      workspace.performAutoLayout_(true); // Force X alignment
+    }, 100);
+  }
+
   return blockIds;
 };
 

@@ -99,6 +99,10 @@ Blockly.Options = function(options) {
   if (hasScrollbars === undefined) {
     hasScrollbars = hasCategories;
   }
+  var hasBlockOutline = options['hasBlockOutline'];
+  if (hasBlockOutline === undefined) {
+    hasBlockOutline = true;  // Default to enabled
+  }
   var hasCss = options['css'];
   if (hasCss === undefined) {
     hasCss = true;
@@ -130,6 +134,7 @@ Blockly.Options = function(options) {
   this.hasTrashcan = hasTrashcan;
   this.hasSounds = hasSounds;
   this.hasCss = hasCss;
+  this.hasBlockOutline = hasBlockOutline;
   this.horizontalLayout = horizontalLayout;
   this.languageTree = languageTree;
   this.gridOptions = Blockly.Options.parseGridOptions_(options);

@@ -51,6 +51,7 @@ goog.require('Blockly.WorkspaceDragSurfaceSvg');
 goog.require('Blockly.Xml');
 goog.require('Blockly.ZoomControls');
 goog.require('Blockly.IntersectionObserver');
+goog.require('Blockly.BlockOutline');
 
 goog.require('goog.array');
 goog.require('goog.dom');
@@ -500,6 +501,50 @@ Blockly.WorkspaceSvg.prototype.createDom = function(opt_backgroundClass) {
   if (this.options.hasTrashcan) {
     bottom = this.addTrashcan_(bottom);
   }
+
+  // Add block outline panel if enabled (before zoom controls so zoom controls appear on top)
+  if (this.options.hasBlockOutline) {
+    this.blockOutline_ = new Blockly.BlockOutline(this);
+    var outlineSvg = this.blockOutline_.createDom();
+    this.svgGroup_.appendChild(outlineSvg);
+
+    // Add change listener to refresh outline when blocks change
+    var outline = this.blockOutline_;
+    this.addChangeListener(function(event) {
+      // Only refresh on create, delete, or change - ignore move during drag
+      if (event.type === Blockly.Events.BLOCK_CREATE ||
+          event.type === Blockly.Events.BLOCK_DELETE ||
+          event.type === Blockly.Events.BLOCK_CHANGE) {
+        // Defer refresh to avoid multiple updates
+        if (outline.refreshTimeout_) {
+          clearTimeout(outline.refreshTimeout_);
+        }
+        outline.refreshTimeout_ = setTimeout(function() {
+          outline.refresh();
+          outline.refreshTimeout_ = null;
+        }, 100);
+      }
+      // For BLOCK_MOVE, only refresh if it's not a drag (i.e., after drop)
+      else if (event.type === Blockly.Events.BLOCK_MOVE) {
+        // Check if this is the end of a drag (recordUndo is true after drop)
+        if (event.recordUndo) {
+          if (outline.refreshTimeout_) {
+            clearTimeout(outline.refreshTimeout_);
+          }
+          outline.refreshTimeout_ = setTimeout(function() {
+            outline.refresh();
+            outline.refreshTimeout_ = null;
+          }, 100);
+        }
+      }
+    });
+
+    // Initial refresh after a short delay
+    setTimeout(function() {
+      outline.init();
+    }, 100);
+  }
+
   if (this.options.zoomOptions && this.options.zoomOptions.controls) {
     this.addZoomControls_(bottom);
   }
@@ -848,6 +893,9 @@ Blockly.WorkspaceSvg.prototype.resize = function() {
   }
   if (this.zoomControls_) {
     this.zoomControls_.position();
+  }
+  if (this.blockOutline_) {
+    this.blockOutline_.position(this.getMetrics());
   }
   if (this.scrollbar) {
     this.scrollbar.resize();
@@ -2330,16 +2378,44 @@ Blockly.WorkspaceSvg.getContentDimensionsBounded_ = function(ws, svgSize) {
 
   // Add a border around the content that is at least half a screenful wide.
   // Ensure border is wide enough that blocks can scroll over entire screen.
-  var left = Math.min(content.left - halfWidth, content.right - viewWidth);
-  var right = Math.max(content.right + halfWidth, content.left + viewWidth);
-
-  var top = Math.min(content.top - halfHeight, content.bottom - viewHeight);
-  var bottom = Math.max(content.bottom + halfHeight, content.top + viewHeight);
-
-  // In column layout mode, prevent content from extending into negative X coordinates
   var grid = ws.getGrid();
-  if (grid && grid.isColumnLayoutEnabled()) {
-    left = Math.max(left, 0);
+  var isColumnLayout = grid && grid.isColumnLayoutEnabled();
+
+  var left, right, top, bottom;
+  if (isColumnLayout) {
+    // In column layout mode: use fixed padding of 48 horizontally
+    // But keep half-screen padding vertically for drag-and-drop space
+    // Note: content.left/right are already in pixels (scaled), so padding should also be in pixels
+    var fixedPaddingLeft = 48;
+    var fixedPaddingRight = 48;
+
+    // Add minimap width to right padding to prevent blocks from being hidden behind it
+    if (ws.blockOutline_) {
+      fixedPaddingRight += Blockly.BlockOutline.WIDTH;
+    }
+
+    // Horizontal bounds: fixed padding on left, fixed padding + minimap width on right
+    left = content.left - fixedPaddingLeft;
+    left = Math.max(left, 0); // Don't go negative (blocks start at x=48, so left edge is 0)
+    right = content.right + fixedPaddingRight;
+
+    // Ensure minimum width is the viewport width (prevents scrolling when content is narrow)
+    var contentWidth = right - left;
+    if (contentWidth < viewWidth) {
+      // Content fits in viewport - expand to fill viewport, no scrolling
+      right = left + viewWidth;
+    }
+
+    // Vertical bounds: use half-screen padding for easier drag-and-drop
+    // This allows dragging blocks to the very top or bottom of the workspace
+    top = Math.min(content.top - halfHeight, content.bottom - viewHeight);
+    bottom = Math.max(content.bottom + halfHeight, content.top + viewHeight);
+  } else {
+    // Default mode: use half screen padding
+    left = Math.min(content.left - halfWidth, content.right - viewWidth);
+    right = Math.max(content.right + halfWidth, content.left + viewWidth);
+    top = Math.min(content.top - halfHeight, content.bottom - viewHeight);
+    bottom = Math.max(content.bottom + halfHeight, content.top + viewHeight);
   }
 
   var dimensions = {
@@ -2457,6 +2533,10 @@ Blockly.WorkspaceSvg.setTopLevelWorkspaceMetrics_ = function(xyRatio) {
   this.translate(x, y);
   if (this.grid_) {
     this.grid_.moveTo(x, y);
+  }
+  // Update minimap viewport indicator on scroll
+  if (this.blockOutline_) {
+    this.blockOutline_.updateViewportIndicator();
   }
 };
 

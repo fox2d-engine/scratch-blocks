@@ -1350,5 +1350,28 @@ Blockly.Css.CONTENT = [
   '.scratchCategoryMenuItem:hover {',
     'color: $colour_toolboxHover !important;',
   '}',
+
+  /* Block Minimap (VSCode style) */
+  '.blocklyMinimap {',
+    'pointer-events: auto;',
+    'user-select: none;',
+    '-webkit-user-select: none;',
+    '-moz-user-select: none;',
+    '-ms-user-select: none;',
+    'transition: opacity 0.2s;',
+  '}',
+
+  '.blocklyMinimapBackground {',
+    'pointer-events: all;',
+  '}',
+
+  '.blocklyMinimapCanvas {',
+    'pointer-events: all;',
+  ']',
+
+  '.blocklyMinimapViewport {',
+    'pointer-events: none;',
+  ']',
+
   ''
 ];

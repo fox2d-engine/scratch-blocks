@@ -205,6 +205,17 @@ Blockly.Events.Change.prototype.run = function(forward) {
       Blockly.Events.fire(new Blockly.Events.Change(
           block, 'mutation', null, oldMutation, value));
       break;
+    case 'substackCollapse':
+      // Handle collapse/expand of substacks
+      // Temporarily disable events to prevent infinite recursion
+      var oldRecordUndo = Blockly.Events.recordUndo;
+      Blockly.Events.recordUndo = false;
+      try {
+        block.setSubstackCollapsed(this.name, value);
+      } finally {
+        Blockly.Events.recordUndo = oldRecordUndo;
+      }
+      break;
     default:
       console.warn('Unknown change type: ' + this.element);
   }

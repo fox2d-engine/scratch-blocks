@@ -94,6 +94,13 @@ Blockly.Workspace = function(opt_options) {
   this.blockDB_ = Object.create(null);
 
   /**
+   * @type {!Object}
+   * @private
+   * Maps block IDs to their collapse states. Format: { 'blockId': { 'inputName': true } }
+   */
+  this.blockCollapseStates_ = Object.create(null);
+
+  /**
    * @type {!Blockly.VariableMap}
    * A map from variable type to list of variable names.  The lists contain all
    * of the named variables in the workspace, including variables

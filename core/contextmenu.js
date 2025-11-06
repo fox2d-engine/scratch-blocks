@@ -531,4 +531,108 @@ Blockly.ContextMenu.workspaceCommentOption = function(ws, e) {
   return wsCommentOption;
 };
 
+/**
+ * Make a context menu option for folding all hat blocks and C-shaped blocks.
+ * @param {!Array.<!Blockly.BlockSvg>} topBlocks The list of top blocks.
+ * @return {!Object} A menu option, containing text, enabled, and a callback.
+ * @package
+ */
+Blockly.ContextMenu.wsFoldAllOption = function(topBlocks) {
+  // Check if there are any foldable blocks
+  var hasFoldableBlocks = false;
+  for (var i = 0; i < topBlocks.length && !hasFoldableBlocks; i++) {
+    var block = topBlocks[i];
+    // Check if hat block has next connection with blocks
+    if (!block.previousConnection && block.nextConnection && block.getNextBlock()) {
+      hasFoldableBlocks = true;
+      break;
+    }
+    // Check if any block has C-shaped inputs with blocks
+    var checkBlock = function(b) {
+      for (var j = 0; j < b.inputList.length; j++) {
+        var input = b.inputList[j];
+        if (input.type === Blockly.NEXT_STATEMENT) {
+          if (b.type === 'procedures_definition' && input.name === 'custom_block') {
+            continue;
+          }
+          if (input.connection && input.connection.targetBlock()) {
+            return true;
+          }
+        }
+      }
+      var next = b.getNextBlock();
+      if (next && checkBlock(next)) {
+        return true;
+      }
+      return false;
+    };
+    if (checkBlock(block)) {
+      hasFoldableBlocks = true;
+    }
+  }
+
+  return {
+    enabled: hasFoldableBlocks,
+    text: Blockly.Msg.FOLD_ALL,
+    callback: function() {
+      // Use workspace.collapseAll() for proper event grouping
+      if (topBlocks.length > 0 && topBlocks[0].workspace) {
+        topBlocks[0].workspace.collapseAll();
+      }
+    }
+  };
+};
+
+/**
+ * Make a context menu option for unfolding all hat blocks and C-shaped blocks.
+ * @param {!Array.<!Blockly.BlockSvg>} topBlocks The list of top blocks.
+ * @return {!Object} A menu option, containing text, enabled, and a callback.
+ * @package
+ */
+Blockly.ContextMenu.wsUnfoldAllOption = function(topBlocks) {
+  // Check if there are any folded blocks
+  var hasFoldedBlocks = false;
+  for (var i = 0; i < topBlocks.length && !hasFoldedBlocks; i++) {
+    var block = topBlocks[i];
+    // Check if hat block has folded next chain
+    if (!block.previousConnection && block.isSubstackCollapsed('__next__')) {
+      hasFoldedBlocks = true;
+      break;
+    }
+    // Check if any block has folded substacks
+    var checkBlock = function(b) {
+      for (var j = 0; j < b.inputList.length; j++) {
+        var input = b.inputList[j];
+        if (input.type === Blockly.NEXT_STATEMENT) {
+          if (b.type === 'procedures_definition' && input.name === 'custom_block') {
+            continue;
+          }
+          if (b.isSubstackCollapsed(input.name)) {
+            return true;
+          }
+        }
+      }
+      var next = b.getNextBlock();
+      if (next && checkBlock(next)) {
+        return true;
+      }
+      return false;
+    };
+    if (checkBlock(block)) {
+      hasFoldedBlocks = true;
+    }
+  }
+
+  return {
+    enabled: hasFoldedBlocks,
+    text: Blockly.Msg.UNFOLD_ALL,
+    callback: function() {
+      // Use workspace.expandAll() for proper event grouping
+      if (topBlocks.length > 0 && topBlocks[0].workspace) {
+        topBlocks[0].workspace.expandAll();
+      }
+    }
+  };
+};
+
 // End helper functions for creating context menu options.

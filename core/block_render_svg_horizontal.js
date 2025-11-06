@@ -362,13 +362,15 @@ Blockly.BlockSvg.prototype.getHeightWidth = function(opt_ignoreFields) {
     height += Blockly.BlockSvg.FIELD_Y_OFFSET;
     height += Blockly.BlockSvg.FIELD_HEIGHT;
   }
-  // Recursively add size of subsequent blocks.
-  var nextBlock = this.getNextBlock();
-  if (nextBlock) {
-    var nextHeightWidth = nextBlock.getHeightWidth(opt_ignoreFields);
-    width += nextHeightWidth.width;
-    width -= Blockly.BlockSvg.NOTCH_WIDTH; // Exclude width of connected notch.
-    height = Math.max(height, nextHeightWidth.height);
+  // Recursively add size of subsequent blocks (unless collapsed).
+  if (!this.stackCollapsed_) {
+    var nextBlock = this.getNextBlock();
+    if (nextBlock) {
+      var nextHeightWidth = nextBlock.getHeightWidth(opt_ignoreFields);
+      width += nextHeightWidth.width;
+      width -= Blockly.BlockSvg.NOTCH_WIDTH; // Exclude width of connected notch.
+      height = Math.max(height, nextHeightWidth.height);
+    }
   }
   return {height: height, width: width};
 };
@@ -382,6 +384,9 @@ Blockly.BlockSvg.prototype.getHeightWidth = function(opt_ignoreFields) {
 Blockly.BlockSvg.prototype.render = function(opt_bubble) {
   Blockly.Field.startCache();
   this.rendered = true;
+
+  // Update collapse icon based on current block state
+  this.updateCollapseIcon_();
 
   var oldMetrics = this.renderingMetrics_;
   var metrics = this.renderCompute_();
@@ -449,12 +454,19 @@ Blockly.BlockSvg.prototype.renderCompute_ = function() {
       // Compute minimum input size.
       metrics.bayHeight = Blockly.BlockSvg.MIN_BLOCK_Y;
       metrics.bayWidth = Blockly.BlockSvg.MIN_BLOCK_X;
-      // Expand input size if there is a connection.
-      if (input.connection && input.connection.targetConnection) {
+      // Expand input size if there is a connection (and this block is not collapsed).
+      // Exception: procedures_definition's custom_block should always show
+      var shouldCollapse = this.stackCollapsed_;
+      if (this.type === 'procedures_definition' && input.name === 'custom_block') {
+        shouldCollapse = false;
+      }
+      if (input.connection && input.connection.targetConnection && !shouldCollapse) {
         var linkedBlock = input.connection.targetBlock();
-        var bBox = linkedBlock.getHeightWidth(true);
-        metrics.bayHeight = Math.max(metrics.bayHeight, bBox.height);
-        metrics.bayWidth = Math.max(metrics.bayWidth, bBox.width);
+        if (linkedBlock) {
+          var bBox = linkedBlock.getHeightWidth(true);
+          metrics.bayHeight = Math.max(metrics.bayHeight, bBox.height);
+          metrics.bayWidth = Math.max(metrics.bayWidth, bBox.width);
+        }
       }
       var linkedBlock = input.connection.targetBlock();
       if (linkedBlock && !linkedBlock.lastConnectionInStack()) {

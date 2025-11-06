@@ -129,6 +129,13 @@ Blockly.Block = function(workspace, prototypeName, opt_id) {
 
   /**
    * @type {boolean}
+   * @protected
+   * Stack collapsed state - when true, next blocks and substack children are hidden from rendering
+   */
+  this.stackCollapsed_ = false;
+
+  /**
+   * @type {boolean}
    * @private
    */
   this.checkboxInFlyout_ = false;
@@ -1195,6 +1202,571 @@ Blockly.Block.prototype.setCollapsed = function(collapsed) {
         this, 'collapsed', null, this.collapsed_, collapsed));
     this.collapsed_ = collapsed;
   }
+};
+
+/**
+ * Set hidden state for all connections of a block.
+ * @param {boolean} hidden Whether to hide connections.
+ * @private
+ */
+Blockly.Block.prototype.setAllConnectionsHidden_ = function(hidden) {
+  if (this.previousConnection) {
+    this.previousConnection.setHidden(hidden);
+  }
+  if (this.nextConnection) {
+    this.nextConnection.setHidden(hidden);
+  }
+  if (this.outputConnection) {
+    this.outputConnection.setHidden(hidden);
+  }
+  for (var i = 0; i < this.inputList.length; i++) {
+    var input = this.inputList[i];
+    if (input.connection) {
+      input.connection.setHidden(hidden);
+    }
+  }
+};
+
+/**
+ * Get whether a specific substack or next chain is collapsed.
+ * @param {string} inputName The name of the substack input, or '__next__' for next chain.
+ * @return {boolean} True if the specified substack/next is collapsed.
+ */
+Blockly.Block.prototype.isSubstackCollapsed = function(inputName) {
+  // Read from workspace-level collapse state map
+  if (this.workspace && this.workspace.blockCollapseStates_) {
+    var blockState = this.workspace.blockCollapseStates_[this.id];
+    if (blockState) {
+      return !!blockState[inputName];
+    }
+  }
+  return false;
+};
+
+/**
+ * Set whether a specific substack or next chain is collapsed.
+ * When collapsed, blocks in that substack/next are hidden from rendering.
+ * Connection data remains unchanged.
+ * @param {string} inputName The name of the substack input, or '__next__' for next chain.
+ * @param {boolean} collapsed True if should be collapsed.
+ */
+Blockly.Block.prototype.setSubstackCollapsed = function(inputName, collapsed) {
+  // Store in workspace-level collapse state map
+  if (!this.workspace || !this.workspace.blockCollapseStates_) {
+    return;
+  }
+
+  var blockState = this.workspace.blockCollapseStates_[this.id];
+  if (!blockState) {
+    blockState = {};
+    this.workspace.blockCollapseStates_[this.id] = blockState;
+  }
+
+  // Check actual DOM state to determine if we need to apply changes
+  var actuallyCollapsed = false;
+  if (inputName === '__next__') {
+    var nextBlock = this.getNextBlock();
+    actuallyCollapsed = nextBlock && nextBlock.isCollapsedHidden_;
+  } else {
+    var input = this.getInput(inputName);
+    if (input && input.connection) {
+      var substackBlock = input.connection.targetBlock();
+      actuallyCollapsed = substackBlock && substackBlock.isCollapsedHidden_;
+    }
+  }
+
+  // Record old value for undo/redo
+  var oldValue = actuallyCollapsed;
+
+  // Update workspace state
+  blockState[inputName] = collapsed;
+
+  // Apply changes if DOM state doesn't match desired state
+  if (actuallyCollapsed != collapsed) {
+
+    // Update collapse icons for this specific substack
+    this.updateCollapseIcon_();
+
+    // Handle next chain collapse (for hat blocks)
+    if (inputName === '__next__') {
+      if (this.nextConnection) {
+        this.nextConnection.setHidden(collapsed);
+      }
+    }
+    // Handle substack input collapse
+    else {
+      var input = this.getInput(inputName);
+      if (input && input.type === Blockly.NEXT_STATEMENT && input.connection) {
+        input.connection.setHidden(collapsed);
+      }
+    }
+
+    if (collapsed) {
+      // Collapsing - get all blocks and hide them
+      var blocksToHide = this.getCollapsedBlocksForSubstack_(inputName);
+      for (var i = 0; i < blocksToHide.length; i++) {
+        var block = blocksToHide[i];
+
+        // Disable all connections using utility method
+        block.setAllConnectionsHidden_(true);
+        block.isCollapsedHidden_ = true;
+        block.hideFromDom_();
+      }
+    } else {
+      // Expanding - recursively show blocks while respecting nested collapse states
+      try {
+        if (inputName === '__next__') {
+          // For next chain, show and render the first block (it will recursively show/render the rest)
+          var nextBlock = this.getNextBlock();
+          if (nextBlock) {
+            nextBlock.showBlockAndDescendants_(true);  // Skip render, will render below
+            // Now render all shown blocks from deepest to root
+            this.renderExpandedBlocks_(inputName);
+          }
+        } else {
+          // For substack, show and render the first block (it will recursively show/render descendants)
+          var input = this.getInput(inputName);
+          if (input && input.connection) {
+            var substackBlock = input.connection.targetBlock();
+            if (substackBlock) {
+              substackBlock.showBlockAndDescendants_(true);  // Skip render, will render below
+              // Now render all shown blocks from deepest to root
+              this.renderExpandedBlocks_(inputName);
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Error expanding collapsed blocks:', e);
+        // Attempt recovery: force render parent block
+        if (this.rendered) {
+          try {
+            this.render();
+          } catch (renderError) {
+            console.error('Failed to recover from expand error:', renderError);
+          }
+        }
+      }
+    }
+
+    // Update collapse indicators (create/remove them)
+    if (this.updateCollapseIndicators_) {
+      this.updateCollapseIndicators_();
+    }
+
+    // Re-render this block
+    if (this.rendered) {
+      this.render();
+      var current = this.getParent();
+      while (current) {
+        if (current.rendered) {
+          current.render();
+        }
+        current = current.getParent();
+      }
+
+      // Position collapse indicators after rendering is complete
+      if (this.positionCollapseIndicators_) {
+        this.positionCollapseIndicators_();
+      }
+    }
+
+    // Fire event for undo/redo
+    if (Blockly.Events.isEnabled()) {
+      Blockly.Events.fire(new Blockly.Events.Change(
+          this, 'substackCollapse', inputName, oldValue, collapsed));
+    }
+
+    // Trigger workspace updates
+    // Skip async updates if we're in an event group (e.g., collapseAll/expandAll)
+    // The caller will handle UI updates synchronously
+    var inEventGroup = Blockly.Events.getGroup();
+    if (!inEventGroup && this.workspace && !this.isInFlyout) {
+      var workspace = this.workspace;
+
+      // Use single RAF to coordinate all updates and avoid race conditions
+      requestAnimationFrame(function() {
+        // Refresh minimap and gutter immediately
+        if (workspace.blockOutline_) {
+          workspace.blockOutline_.refresh();
+        }
+        if (workspace.collapseGutter_) {
+          workspace.collapseGutter_.refresh();
+        }
+
+        // Delay auto-layout because it needs to wait for render to complete
+        if (workspace.arrangeStatementBlocks_ && workspace.grid_ &&
+            workspace.grid_.isColumnLayoutEnabled()) {
+          setTimeout(function() {
+            workspace.arrangeStatementBlocks_();
+          }, 50);
+        }
+      });
+    }
+  }
+};
+
+/**
+ * Get all blocks that should be hidden for a specific substack or next chain.
+ * @param {string} inputName The name of the substack input, or '__next__' for next chain.
+ * @return {!Array.<!Blockly.Block>} Array of blocks to collapse.
+ * @private
+ */
+Blockly.Block.prototype.getCollapsedBlocksForSubstack_ = function(inputName) {
+  var blocks = [];
+  var blockSet = {};  // Use object for O(1) lookup instead of indexOf
+
+  // Handle next chain (__next__)
+  if (inputName === '__next__') {
+    var nextBlock = this.getNextBlock();
+    while (nextBlock) {
+      if (!blockSet[nextBlock.id]) {
+        blocks.push(nextBlock);
+        blockSet[nextBlock.id] = true;
+      }
+      var descendants = nextBlock.getDescendants(false);
+      for (var i = 0; i < descendants.length; i++) {
+        var descendant = descendants[i];
+        if (descendant !== nextBlock && !blockSet[descendant.id]) {
+          blocks.push(descendant);
+          blockSet[descendant.id] = true;
+        }
+      }
+      nextBlock = nextBlock.getNextBlock();
+    }
+  }
+  // Handle specific substack input
+  else {
+    var input = this.getInput(inputName);
+    if (input && input.type === Blockly.NEXT_STATEMENT && input.connection) {
+      // Skip custom_block for procedures_definition
+      if (this.type === 'procedures_definition' && inputName === 'custom_block') {
+        return blocks;
+      }
+
+      var substackBlock = input.connection.targetBlock();
+      if (substackBlock) {
+        var substackDescendants = substackBlock.getDescendants(false);
+        for (var j = 0; j < substackDescendants.length; j++) {
+          var descendant = substackDescendants[j];
+          if (!blockSet[descendant.id]) {
+            blocks.push(descendant);
+            blockSet[descendant.id] = true;
+          }
+        }
+      }
+    }
+  }
+
+  return blocks;
+};
+
+/**
+ * Recursively render all blocks that were just expanded.
+ * Renders from deepest children to root to ensure correct sizing.
+ * @param {string} inputName The input name that was expanded.
+ * @private
+ */
+Blockly.Block.prototype.renderExpandedBlocks_ = function(inputName) {
+  if (inputName === '__next__') {
+    // Render next chain
+    var nextBlock = this.getNextBlock();
+    if (nextBlock) {
+      this.renderBlockTree_(nextBlock);
+    }
+  } else {
+    // Render substack
+    var input = this.getInput(inputName);
+    if (input && input.connection) {
+      var substackBlock = input.connection.targetBlock();
+      if (substackBlock) {
+        this.renderBlockTree_(substackBlock);
+      }
+    }
+  }
+};
+
+/**
+ * Recursively render a block and all its descendants (depth-first).
+ * @param {!Blockly.Block} block The root block to render.
+ * @private
+ */
+Blockly.Block.prototype.renderBlockTree_ = function(block) {
+  if (!block || !block.rendered) {
+    return;
+  }
+
+  // Avoid duplicate renders using flag
+  if (block._isRendering) {
+    return;
+  }
+  block._isRendering = true;
+
+  try {
+    // First, recursively render all children (depth-first)
+    // This ensures children are sized correctly before parent
+
+    // Render next blocks
+    var nextBlock = block.getNextBlock();
+    if (nextBlock && !block.isSubstackCollapsed('__next__')) {
+      this.renderBlockTree_(nextBlock);
+    }
+
+    // Render substack blocks
+    for (var i = 0; i < block.inputList.length; i++) {
+      var input = block.inputList[i];
+      if (input.type === Blockly.NEXT_STATEMENT && input.connection) {
+        if (!block.isSubstackCollapsed(input.name)) {
+          var substackBlock = input.connection.targetBlock();
+          if (substackBlock) {
+            this.renderBlockTree_(substackBlock);
+          }
+        }
+      } else if (input.type === Blockly.INPUT_VALUE && input.connection) {
+        var valueBlock = input.connection.targetBlock();
+        if (valueBlock) {
+          this.renderBlockTree_(valueBlock);
+        }
+      }
+    }
+
+    // Finally, render this block (after all children are rendered)
+    block.render();
+  } finally {
+    // Always clear the flag, even if render throws
+    block._isRendering = false;
+  }
+};
+
+/**
+ * Maximum recursion depth for showing blocks.
+ * Prevents stack overflow with deeply nested blocks.
+ * @const
+ */
+Blockly.Block.MAX_SHOW_RECURSION_DEPTH = 1000;
+
+/**
+ * Show this block and recursively show descendants, respecting collapse states.
+ * @param {boolean=} skipRender If true, don't render after showing. Used for batch operations.
+ * @param {number=} depth Current recursion depth (for stack overflow prevention).
+ * @private
+ */
+Blockly.Block.prototype.showBlockAndDescendants_ = function(skipRender, depth) {
+  // Prevent stack overflow with depth limit
+  depth = depth || 0;
+  if (depth > Blockly.Block.MAX_SHOW_RECURSION_DEPTH) {
+    console.warn('Max recursion depth reached while showing blocks. ' +
+        'Possible circular reference or extremely deep nesting.');
+    return;
+  }
+
+  // Show this block (always skip render initially, we'll render after recursion)
+  this.showInDom_(true);
+  this.isCollapsedHidden_ = false;
+
+  // Enable this block's connections (except those that are collapsed)
+  if (this.previousConnection) {
+    this.previousConnection.setHidden(false);
+  }
+  if (this.outputConnection) {
+    this.outputConnection.setHidden(false);
+  }
+
+  var nextDepth = depth + 1;
+
+  // Handle next connection - check if it's collapsed
+  if (this.nextConnection) {
+    var isNextCollapsed = this.isSubstackCollapsed('__next__');
+    this.nextConnection.setHidden(isNextCollapsed);
+
+    if (!isNextCollapsed) {
+      // Show next block and its chain recursively
+      var nextBlock = this.getNextBlock();
+      if (nextBlock) {
+        nextBlock.showBlockAndDescendants_(true, nextDepth);  // Skip render for batch
+      }
+    }
+  }
+
+  // Handle all inputs
+  for (var i = 0; i < this.inputList.length; i++) {
+    var input = this.inputList[i];
+    if (!input.connection) {
+      continue;
+    }
+
+    if (input.type === Blockly.NEXT_STATEMENT) {
+      // Statement input (C-shaped blocks)
+      // Skip custom_block for procedures_definition
+      if (this.type === 'procedures_definition' && input.name === 'custom_block') {
+        input.connection.setHidden(false);
+        var substackBlock = input.connection.targetBlock();
+        if (substackBlock) {
+          substackBlock.showBlockAndDescendants_(true, nextDepth);  // Skip render for batch
+        }
+        continue;
+      }
+
+      var isSubstackCollapsed = this.isSubstackCollapsed(input.name);
+      input.connection.setHidden(isSubstackCollapsed);
+
+      if (!isSubstackCollapsed) {
+        // Show substack and its descendants recursively
+        var substackBlock = input.connection.targetBlock();
+        if (substackBlock) {
+          substackBlock.showBlockAndDescendants_(true, nextDepth);  // Skip render for batch
+        }
+      }
+    } else if (input.type === Blockly.INPUT_VALUE) {
+      // Value input (round/hexagonal blocks) - always show
+      input.connection.setHidden(false);
+      var valueBlock = input.connection.targetBlock();
+      if (valueBlock) {
+        // Recursively show the value block and its descendants
+        valueBlock.showBlockAndDescendants_(true, nextDepth);  // Skip render for batch
+      }
+    } else {
+      // Other input types
+      input.connection.setHidden(false);
+    }
+  }
+
+  // After recursion completes, render this block if not skipped
+  // This ensures children are rendered before parents
+  if (!skipRender && this.rendered) {
+    this.render();
+  }
+};
+
+/**
+ * Get the count of blocks in a specific substack or next chain.
+ * @param {string} inputName The name of the substack input, or '__next__' for next chain.
+ * @return {number} Number of blocks.
+ * @private
+ */
+Blockly.Block.prototype.getCollapsedBlockCountForSubstack_ = function(inputName) {
+  var count = 0;
+
+  // Handle next chain
+  if (inputName === '__next__') {
+    var nextBlock = this.getNextBlock();
+    while (nextBlock) {
+      count++;
+      nextBlock = nextBlock.getNextBlock();
+    }
+  }
+  // Handle substack input
+  else {
+    var input = this.getInput(inputName);
+    if (input && input.type === Blockly.NEXT_STATEMENT && input.connection) {
+      if (this.type === 'procedures_definition' && inputName === 'custom_block') {
+        return 0;
+      }
+
+      var substackBlock = input.connection.targetBlock();
+      while (substackBlock) {
+        count++;
+        substackBlock = substackBlock.getNextBlock();
+      }
+    }
+  }
+
+  return count;
+};
+
+/**
+ * Get all blocks that should be hidden when this block's stack is collapsed.
+ * For hat blocks (no previousConnection): includes next blocks + substack inputs.
+ * For C-shaped blocks: includes only substack inputs (not next blocks).
+ * @return {!Array.<!Blockly.Block>} Array of blocks to collapse.
+ * @private
+ * @deprecated Use getCollapsedBlocksForSubstack_ instead
+ */
+Blockly.Block.prototype.getCollapsedBlocks_ = function() {
+  var blocks = [];
+  var isHatBlock = !this.previousConnection;
+
+  // Only include next blocks for hat blocks (event blocks without previous connection)
+  if (isHatBlock) {
+    var nextBlock = this.getNextBlock();
+    while (nextBlock) {
+      blocks.push(nextBlock);
+      // Also get all descendants of each next block
+      var descendants = nextBlock.getDescendants(false);
+      for (var i = 0; i < descendants.length; i++) {
+        if (descendants[i] !== nextBlock && blocks.indexOf(descendants[i]) === -1) {
+          blocks.push(descendants[i]);
+        }
+      }
+      nextBlock = nextBlock.getNextBlock();
+    }
+  }
+
+  // Add all blocks in substack inputs (for both hat blocks and C-shaped blocks)
+  for (var i = 0; i < this.inputList.length; i++) {
+    var input = this.inputList[i];
+    if (input.type === Blockly.NEXT_STATEMENT && input.connection) {
+      // Skip custom_block input for procedures_definition (to keep prototype visible)
+      if (this.type === 'procedures_definition' && input.name === 'custom_block') {
+        continue;
+      }
+
+      var substackBlock = input.connection.targetBlock();
+      if (substackBlock) {
+        // Add the substack block and all its descendants
+        var substackDescendants = substackBlock.getDescendants(false);
+        for (var j = 0; j < substackDescendants.length; j++) {
+          if (blocks.indexOf(substackDescendants[j]) === -1) {
+            blocks.push(substackDescendants[j]);
+          }
+        }
+      }
+    }
+  }
+
+  return blocks;
+};
+
+/**
+ * Get the count of collapsed blocks (for display purposes).
+ * For hat blocks (no previousConnection): counts next blocks + substack blocks.
+ * For C-shaped blocks: counts only substack blocks (not next blocks).
+ * @return {number} Number of collapsed blocks.
+ * @private
+ */
+Blockly.Block.prototype.getCollapsedBlockCount_ = function() {
+  var count = 0;
+  var isHatBlock = !this.previousConnection;
+
+  // Only count next blocks for hat blocks (event blocks without previous connection)
+  if (isHatBlock) {
+    var nextBlock = this.getNextBlock();
+    while (nextBlock) {
+      count++;
+      nextBlock = nextBlock.getNextBlock();
+    }
+  }
+
+  // Count blocks in substack inputs (for both hat blocks and C-shaped blocks)
+  for (var i = 0; i < this.inputList.length; i++) {
+    var input = this.inputList[i];
+    if (input.type === Blockly.NEXT_STATEMENT && input.connection) {
+      // Skip custom_block input for procedures_definition
+      if (this.type === 'procedures_definition' && input.name === 'custom_block') {
+        continue;
+      }
+
+      var substackBlock = input.connection.targetBlock();
+      if (substackBlock) {
+        // Count this block and all its next siblings
+        while (substackBlock) {
+          count++;
+          substackBlock = substackBlock.getNextBlock();
+        }
+      }
+    }
+  }
+
+  return count;
 };
 
 /**

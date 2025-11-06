@@ -310,6 +310,8 @@ Blockly.Msg.UNDO = 'Undo';
 Blockly.Msg.REDO = 'Redo';
 Blockly.Msg.EDIT_PROCEDURE = 'Edit';
 Blockly.Msg.SHOW_PROCEDURE_DEFINITION = 'Go to definition';
+Blockly.Msg.FOLD_ALL = 'Fold All';
+Blockly.Msg.UNFOLD_ALL = 'Unfold All';
 Blockly.Msg.WORKSPACE_COMMENT_DEFAULT_TEXT = 'Say something...';
 
 // Color

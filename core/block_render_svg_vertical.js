@@ -613,13 +613,17 @@ Blockly.BlockSvg.prototype.highlightShapeForInput = function(conn, add) {
 Blockly.BlockSvg.prototype.getHeightWidth = function() {
   var height = this.height;
   var width = this.width;
-  // Recursively add size of subsequent blocks.
-  var nextBlock = this.getNextBlock();
-  if (nextBlock) {
-    var nextHeightWidth = nextBlock.getHeightWidth();
-    height += nextHeightWidth.height;
-    height -= Blockly.BlockSvg.NOTCH_HEIGHT; // Exclude height of connected notch.
-    width = Math.max(width, nextHeightWidth.width);
+  // Recursively add size of subsequent blocks (unless next chain is collapsed).
+  // For hat blocks, check if '__next__' is collapsed
+  var isNextCollapsed = this.isSubstackCollapsed && this.isSubstackCollapsed('__next__');
+  if (!isNextCollapsed) {
+    var nextBlock = this.getNextBlock();
+    if (nextBlock) {
+      var nextHeightWidth = nextBlock.getHeightWidth();
+      height += nextHeightWidth.height;
+      height -= Blockly.BlockSvg.NOTCH_HEIGHT; // Exclude height of connected notch.
+      width = Math.max(width, nextHeightWidth.width);
+    }
   }
   return {height: height, width: width};
 };
@@ -634,6 +638,9 @@ Blockly.BlockSvg.prototype.render = function(opt_bubble) {
   Blockly.Field.startCache();
   this.rendered = true;
 
+  // Update collapse icon based on current block state
+  this.updateCollapseIcon_();
+
   var cursorX = Blockly.BlockSvg.SEP_SPACE_X;
   if (this.RTL) {
     cursorX = -cursorX;
@@ -646,6 +653,10 @@ Blockly.BlockSvg.prototype.render = function(opt_bubble) {
       // Don't render scratch block comment icon until
       // after the inputs
       scratchCommentIcon = icons[i];
+    } else if (icons[i] instanceof Blockly.CollapseIcon && icons[i].inputName_ !== '__next__') {
+      // Don't render substack collapse icons yet, they will be positioned in renderDraw_
+      // when processing each statement input
+      continue;
     } else {
       cursorX = icons[i].renderIcon(cursorX);
     }
@@ -666,6 +677,15 @@ Blockly.BlockSvg.prototype.render = function(opt_bubble) {
   this.renderMoveConnections_();
 
   this.renderClassify_();
+
+  // Substack collapse icons are positioned in renderDraw_ when processing statement inputs
+  // (no need to position them here)
+
+  // Position hat block's collapse indicator (end block) after rendering is complete
+  // C-shaped block indicators are already positioned in renderDraw_
+  if (this.positionCollapseIndicators_) {
+    this.positionCollapseIndicators_();
+  }
 
   // Position the Scratch Block Comment Icon at the end of the block
   if (scratchCommentIcon) {
@@ -836,13 +856,30 @@ Blockly.BlockSvg.prototype.renderCompute_ = function(iconWidth) {
       var linkedBlock = input.connection.targetBlock();
       var paddedHeight = 0;
       var paddedWidth = 0;
-      if (linkedBlock) {
+      // For NEXT_STATEMENT (substack), check if this block is collapsed
+      // For INPUT_VALUE, check if the linked block itself is hidden
+      var shouldIgnoreSize = false;
+      if (input.connection.type === Blockly.NEXT_STATEMENT) {
+        // Substack inputs: collapse if this specific substack is collapsed
+        // Exception: procedures_definition's custom_block should always show
+        if (this.type === 'procedures_definition' && input.name === 'custom_block') {
+          shouldIgnoreSize = false;
+        } else {
+          // Check if this specific substack is collapsed
+          shouldIgnoreSize = this.isSubstackCollapsed && this.isSubstackCollapsed(input.name);
+        }
+      } else if (input.connection.type === Blockly.INPUT_VALUE) {
+        // Value inputs: only ignore if the linked block itself is hidden
+        shouldIgnoreSize = linkedBlock && linkedBlock.isCollapsedHidden_;
+      }
+
+      if (linkedBlock && !shouldIgnoreSize) {
         // A block is connected to the input - use its size.
         var bBox = linkedBlock.getHeightWidth();
         paddedHeight = bBox.height;
         paddedWidth = bBox.width;
       } else {
-        // No block connected - use the size of the rendered empty input shape.
+        // No block connected (or should ignore size) - use the size of the rendered empty input shape.
         paddedHeight = Blockly.BlockSvg.INPUT_SHAPE_HEIGHT;
       }
       if (input.connection.type === Blockly.INPUT_VALUE) {
@@ -1361,6 +1398,15 @@ Blockly.BlockSvg.prototype.renderDrawRight_ = function(steps,
         this.width = Math.max(this.width, inputRows.statementEdge +
           input.connection.targetBlock().getHeightWidth().width);
       }
+
+      // Position collapse indicator for this substack if it's collapsed
+      if (this.collapseIndicators_ && this.collapseIndicators_[input.name]) {
+        var indicator = this.collapseIndicators_[input.name];
+        indicator.setAttribute('transform', 'translate(0,' + cursorY + ')');
+      }
+
+      // Collapse icons are now managed by the workspace's collapse gutter
+      // No need to create icons here
       if (this.type != Blockly.PROCEDURES_DEFINITION_BLOCK_TYPE &&
         (y == inputRows.length - 1 ||
           inputRows[y + 1].type == Blockly.NEXT_STATEMENT)) {

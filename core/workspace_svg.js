@@ -28,6 +28,7 @@ goog.provide('Blockly.WorkspaceSvg');
 
 // TODO(scr): Fix circular dependencies
 //goog.require('Blockly.BlockSvg');
+goog.require('Blockly.CollapseGutter');
 goog.require('Blockly.Colours');
 goog.require('Blockly.ConnectionDB');
 goog.require('Blockly.constants');
@@ -502,6 +503,31 @@ Blockly.WorkspaceSvg.prototype.createDom = function(opt_backgroundClass) {
     bottom = this.addTrashcan_(bottom);
   }
 
+  // Add collapse gutter (before minimap and zoom controls)
+  if (!this.isFlyout) {
+    this.collapseGutter_ = new Blockly.CollapseGutter(this);
+    var gutterSvg = this.collapseGutter_.createDom();
+    this.svgGroup_.appendChild(gutterSvg);
+
+    // Add change listener to refresh gutter when blocks change or viewport changes
+    var gutter = this.collapseGutter_;
+    this.addChangeListener(function(event) {
+      // Refresh on create, delete, change, move, or viewport change (scroll/zoom)
+      if (event.type === Blockly.Events.BLOCK_CREATE ||
+          event.type === Blockly.Events.BLOCK_DELETE ||
+          event.type === Blockly.Events.BLOCK_CHANGE ||
+          event.type === Blockly.Events.VIEWPORT_CHANGE ||
+          (event.type === Blockly.Events.BLOCK_MOVE && event.recordUndo)) {
+        gutter.refresh();
+      }
+    });
+
+    // Initial refresh after a short delay
+    setTimeout(function() {
+      gutter.init();
+    }, 100);
+  }
+
   // Add block outline panel if enabled (before zoom controls so zoom controls appear on top)
   if (this.options.hasBlockOutline) {
     this.blockOutline_ = new Blockly.BlockOutline(this);
@@ -893,6 +919,9 @@ Blockly.WorkspaceSvg.prototype.resize = function() {
   }
   if (this.zoomControls_) {
     this.zoomControls_.position();
+  }
+  if (this.collapseGutter_) {
+    this.collapseGutter_.position(this.getMetrics());
   }
   if (this.blockOutline_) {
     this.blockOutline_.position(this.getMetrics());
@@ -1694,41 +1723,49 @@ Blockly.WorkspaceSvg.prototype.performAutoLayout_ = function(opt_forceXAlign) {
 };
 
 /**
- * Arrange statement blocks in a column without affecting reporters
- * This respects user spacing - only prevents overlaps, doesn't force uniform spacing
- * Like blank lines in a text editor, users can keep extra space if they want
+ * Arrange statement blocks in a column with uniform spacing
+ * Uses fixed spacing (MIN_BLOCK_Y) between blocks, same as cleanUp()
+ * In gentle layout mode (default): only statement blocks are arranged, reporters are skipped
+ * In forceXAlign mode: both statement and reporter blocks are arranged
  * @param {boolean=} opt_forceXAlign Whether to force X alignment (for target switch)
  * @private
  */
 Blockly.WorkspaceSvg.prototype.arrangeStatementBlocks_ = function(opt_forceXAlign) {
   this.setResizesEnabled(false);
-  Blockly.Events.setGroup(true);
+  // Only create new event group if we're not already in one
+  // Note: empty string "" means no group, so we need explicit check
+  var existingGroup = Blockly.Events.getGroup();
+  var shouldCreateGroup = (existingGroup === '' || !existingGroup);
+  if (shouldCreateGroup) {
+    Blockly.Events.setGroup(true);
+  }
 
   var topBlocks = this.getTopBlocks(true);
   var grid = this.getGrid();
   var shouldAlignToColumn = grid && grid.isColumnLayoutEnabled();
-  var minSpacing = Blockly.BlockSvg.MIN_BLOCK_Y;
+  // Use 72px spacing to match "Clean Up" function (was MIN_BLOCK_Y = 48px)
+  var minSpacing = 72;
   var forceXAlign = opt_forceXAlign || false;
 
-  // Two modes: cleanUp-style (forceXAlign) vs gentle layout (normal)
-  var cursorY = 0; // For cleanUp-style: next block position
-  var minRequiredY = 0; // For gentle layout: minimum Y to avoid overlaps
+  // Use cursorY for fixed spacing, same approach as cleanUp()
+  var cursorY = 0;
 
   for (var i = 0; i < topBlocks.length; i++) {
     var block = topBlocks[i];
+    var isReporter = !!block.outputConnection;
 
-    // Skip reporter blocks (round/hexagonal blocks)
-    if (block.outputConnection) {
+    // Skip reporter blocks (round/hexagonal blocks) unless forceXAlign is true
+    if (isReporter && !forceXAlign) {
       continue;
     }
 
     var xy = block.getRelativeToSurfaceXY();
-    var blockHeight = block.getHeightWidth().height;
 
     if (shouldAlignToColumn) {
       if (forceXAlign) {
         // CleanUp-style: force tight layout from top (for sprite switching)
-        var columnX = 48; // Column layout X position
+        // Both statement blocks and reporter blocks align to column (X=48)
+        var columnX = 48;
         var deltaX = columnX - xy.x;
         var deltaY = cursorY - xy.y;
 
@@ -1737,48 +1774,32 @@ Blockly.WorkspaceSvg.prototype.arrangeStatementBlocks_ = function(opt_forceXAlig
         block.snapToGrid();
 
         // Update cursor for next block
-        xy = block.getRelativeToSurfaceXY();
-        cursorY = xy.y + blockHeight + minSpacing;
+        cursorY = block.getRelativeToSurfaceXY().y +
+            block.getHeightWidth().height + minSpacing;
       } else {
-        // Gentle layout: only prevent overlaps, preserve user spacing
-        var deltaY = 0;
-        if (xy.y < minRequiredY) {
-          deltaY = minRequiredY - xy.y;
-        }
+        // Gentle layout: use fixed spacing like cleanUp(), but skip reporter blocks
+        // Move to approximate position first, then let snapToGrid handle precise alignment
+        block.moveBy(0, cursorY - xy.y);
+        // Call snapToGrid() to ensure column alignment is exact
+        block.snapToGrid();
 
-        if (Math.abs(deltaY) > 1) {
-          block.moveBy(0, deltaY);
-          block.snapToGrid();
-          // Update position after move
-          xy = block.getRelativeToSurfaceXY();
-        }
-
-        minRequiredY = xy.y + blockHeight + minSpacing;
+        cursorY = block.getRelativeToSurfaceXY().y +
+            block.getHeightWidth().height + minSpacing;
       }
     } else {
-      // Default layout: always align to left column and prevent vertical overlaps
-      var deltaX = 0 - xy.x;
-      var deltaY = 0;
-
-      // Only adjust Y if overlapping
-      if (xy.y < minRequiredY) {
-        deltaY = minRequiredY - xy.y;
-      }
-
-      // Move block if necessary
-      if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
-        block.moveBy(deltaX, deltaY);
-        block.snapToGrid();
-        // Update position after move
-        xy = block.getRelativeToSurfaceXY();
-      }
-
-      // Update minimum required Y for next block
-      minRequiredY = xy.y + blockHeight + minSpacing;
+      // Default layout: align to left column with fixed spacing like cleanUp()
+      var targetX = 0;
+      block.moveBy(targetX - xy.x, cursorY - xy.y);
+      block.snapToGrid();
+      cursorY = block.getRelativeToSurfaceXY().y +
+          block.getHeightWidth().height + minSpacing;
     }
   }
 
-  Blockly.Events.setGroup(false);
+  // Only clear event group if we created it
+  if (!existingGroup) {
+    Blockly.Events.setGroup(false);
+  }
   this.setResizesEnabled(true);
 };
 
@@ -1855,6 +1876,136 @@ Blockly.WorkspaceSvg.prototype.cleanUp = function() {
 };
 
 /**
+ * Collapse all collapsible blocks in the workspace.
+ * All collapse events will be grouped together for single undo/redo.
+ */
+Blockly.WorkspaceSvg.prototype.collapseAll = function() {
+  var topBlocks = this.getTopBlocks(false);
+
+  // Start event group - all collapse events will share the same group ID
+  Blockly.Events.setGroup(true);
+
+  try {
+    // Collapse all blocks - each will fire an event in the same group
+    for (var i = 0; i < topBlocks.length; i++) {
+      var block = topBlocks[i];
+
+      // Collapse next chain for hat blocks
+      if (block.nextConnection) {
+        var nextBlock = block.getNextBlock();
+        if (nextBlock) {
+          block.setSubstackCollapsed('__next__', true);
+        }
+      }
+
+      // Collapse all substack inputs
+      for (var j = 0; j < block.inputList.length; j++) {
+        var input = block.inputList[j];
+        if (input.type === Blockly.NEXT_STATEMENT && input.connection) {
+          var substackBlock = input.connection.targetBlock();
+          if (substackBlock) {
+            block.setSubstackCollapsed(input.name, true);
+          }
+        }
+      }
+    }
+
+    // Synchronously refresh UI (no events)
+    if (this.blockOutline_) {
+      this.blockOutline_.refresh();
+    }
+    if (this.collapseGutter_) {
+      this.collapseGutter_.refresh();
+    }
+
+    // Synchronously run layout if enabled (move events will be in same group)
+    if (this.arrangeStatementBlocks_ && this.grid_ &&
+        this.grid_.isColumnLayoutEnabled()) {
+      this.arrangeStatementBlocks_();
+    }
+  } finally {
+    // End event group
+    Blockly.Events.setGroup(false);
+  }
+};
+
+/**
+ * Expand all collapsed blocks in the workspace.
+ * All expand events will be grouped together for single undo/redo.
+ */
+Blockly.WorkspaceSvg.prototype.expandAll = function() {
+  var topBlocks = this.getTopBlocks(false);
+
+  // Start event group - all expand events will share the same group ID
+  Blockly.Events.setGroup(true);
+
+  try {
+    // Expand all blocks - each will fire an event in the same group
+    for (var i = 0; i < topBlocks.length; i++) {
+      var block = topBlocks[i];
+
+      // Expand next chain for hat blocks
+      if (block.nextConnection && block.isSubstackCollapsed('__next__')) {
+        block.setSubstackCollapsed('__next__', false);
+      }
+
+      // Expand all substack inputs
+      for (var j = 0; j < block.inputList.length; j++) {
+        var input = block.inputList[j];
+        if (input.type === Blockly.NEXT_STATEMENT) {
+          if (block.isSubstackCollapsed(input.name)) {
+            block.setSubstackCollapsed(input.name, false);
+          }
+        }
+      }
+    }
+
+    // Synchronously refresh UI (no events)
+    if (this.blockOutline_) {
+      this.blockOutline_.refresh();
+    }
+    if (this.collapseGutter_) {
+      this.collapseGutter_.refresh();
+    }
+
+    // Synchronously run layout if enabled (move events will be in same group)
+    if (this.arrangeStatementBlocks_ && this.grid_ &&
+        this.grid_.isColumnLayoutEnabled()) {
+      this.arrangeStatementBlocks_();
+    }
+  } finally {
+    // End event group
+    Blockly.Events.setGroup(false);
+  }
+};
+
+/**
+ * Check if a mouse event occurred within the collapse gutter area.
+ * @param {!Event} e Mouse event.
+ * @return {boolean} True if the click is in the gutter area.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.isClickInGutter_ = function(e) {
+  if (!this.collapseGutter_ || !this.collapseGutter_.svgGroup_) {
+    return false;
+  }
+
+  // Get the click position in client coordinates
+  var clickX = e.clientX;
+
+  // Get the gutter's bounding box in client coordinates
+  try {
+    var gutterBBox = this.collapseGutter_.svgGroup_.getBoundingClientRect();
+
+    // Check if click X is within gutter bounds
+    return clickX >= gutterBBox.left && clickX <= gutterBBox.right;
+  } catch (e) {
+    // If getBoundingClientRect fails, assume not in gutter
+    return false;
+  }
+};
+
+/**
  * Show the context menu for the workspace.
  * @param {!Event} e Mouse event.
  * @private
@@ -1898,6 +2049,14 @@ Blockly.WorkspaceSvg.prototype.showContextMenu_ = function(e) {
 
     menuOptions.push(Blockly.ContextMenu.wsExpandOption(hasCollapsedBlocks,
         topBlocks));
+  }
+
+  // Options to fold/unfold all hat blocks and C-shaped blocks
+  // Only show these options when right-clicking in the gutter area
+  var isInGutter = this.isClickInGutter_(e);
+  if (isInGutter) {
+    menuOptions.push(Blockly.ContextMenu.wsFoldAllOption(topBlocks));
+    menuOptions.push(Blockly.ContextMenu.wsUnfoldAllOption(topBlocks));
   }
 
   // Option to add a workspace comment.
@@ -2244,6 +2403,10 @@ Blockly.WorkspaceSvg.prototype.setScale = function(newScale) {
     // No toolbox, resize flyout.
     this.flyout_.reflow();
   }
+  // Refresh collapse gutter to update button positions with new scale
+  if (this.collapseGutter_) {
+    this.collapseGutter_.refresh();
+  }
   this.queueIntersectionCheck();
 };
 
@@ -2267,6 +2430,10 @@ Blockly.WorkspaceSvg.prototype.scroll = function(x, y) {
   Blockly.DropDownDiv.hideWithoutAnimation();
   // Move the scrollbars and the page will scroll automatically.
   this.scrollbar.set(-x - metrics.contentLeft, -y - metrics.contentTop);
+  // Refresh collapse gutter to update button positions
+  if (this.collapseGutter_) {
+    this.collapseGutter_.refresh();
+  }
 };
 
 /**
@@ -2374,7 +2541,10 @@ Blockly.WorkspaceSvg.getContentDimensionsBounded_ = function(ws, svgSize) {
   var viewWidth = svgSize.width;
   var viewHeight = svgSize.height;
   var halfWidth = viewWidth / 2;
-  var halfHeight = viewHeight / 2;
+
+  // Vertical padding: 1/4 viewport height on top, 1/3 on bottom
+  var topPadding = viewHeight / 4;
+  var bottomPadding = viewHeight / 3;
 
   // Add a border around the content that is at least half a screenful wide.
   // Ensure border is wide enough that blocks can scroll over entire screen.
@@ -2384,7 +2554,6 @@ Blockly.WorkspaceSvg.getContentDimensionsBounded_ = function(ws, svgSize) {
   var left, right, top, bottom;
   if (isColumnLayout) {
     // In column layout mode: use fixed padding of 48 horizontally
-    // But keep half-screen padding vertically for drag-and-drop space
     // Note: content.left/right are already in pixels (scaled), so padding should also be in pixels
     var fixedPaddingLeft = 48;
     var fixedPaddingRight = 48;
@@ -2406,16 +2575,16 @@ Blockly.WorkspaceSvg.getContentDimensionsBounded_ = function(ws, svgSize) {
       right = left + viewWidth;
     }
 
-    // Vertical bounds: use half-screen padding for easier drag-and-drop
-    // This allows dragging blocks to the very top or bottom of the workspace
-    top = Math.min(content.top - halfHeight, content.bottom - viewHeight);
-    bottom = Math.max(content.bottom + halfHeight, content.top + viewHeight);
+    // Vertical bounds: 1/4 viewport height on top, 1/3 on bottom
+    // This allows dragging blocks with reasonable space
+    top = Math.min(content.top - topPadding, content.bottom - viewHeight);
+    bottom = Math.max(content.bottom + bottomPadding, content.top + viewHeight);
   } else {
-    // Default mode: use half screen padding
+    // Default mode: half screen padding horizontally, 1/4 top and 1/3 bottom vertically
     left = Math.min(content.left - halfWidth, content.right - viewWidth);
     right = Math.max(content.right + halfWidth, content.left + viewWidth);
-    top = Math.min(content.top - halfHeight, content.bottom - viewHeight);
-    bottom = Math.max(content.bottom + halfHeight, content.top + viewHeight);
+    top = Math.min(content.top - topPadding, content.bottom - viewHeight);
+    bottom = Math.max(content.bottom + bottomPadding, content.top + viewHeight);
   }
 
   var dimensions = {

@@ -249,6 +249,8 @@
     "REDO": "Redo",
     "EDIT_PROCEDURE": "Edit",
     "SHOW_PROCEDURE_DEFINITION": "Go to definition",
+    "FOLD_ALL": "Fold All",
+    "UNFOLD_ALL": "Unfold All",
     "WORKSPACE_COMMENT_DEFAULT_TEXT": "Say something...",
     "COLOUR_HUE_LABEL": "Color",
     "COLOUR_SATURATION_LABEL": "Saturation",

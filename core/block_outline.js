@@ -336,11 +336,13 @@ Blockly.BlockOutline.prototype.onMinimapClick_ = function(e) {
   var workspaceScale = this.workspace_.scale || 1;
 
   // Calculate scroll offset using shared helper
-  var scrollInfo = this.calculateScrollOffset_(bounds, metrics);
+  var scrollInfo = this.calculateScrollOffset_(metrics);
 
   // Account for top margin when calculating click position
+  // Convert click position to workspace coordinates using contentTop
   var clickYInCanvas = point.y + scrollInfo.canvasOffsetY - this.verticalOffset_;
-  var workspaceY = (clickYInCanvas / this.scale_) + bounds.minY;
+  var contentTopWorkspace = metrics.contentTop / workspaceScale;
+  var workspaceY = (clickYInCanvas / this.scale_) + contentTopWorkspace;
 
   var visibleHeightWorkspace = metrics.viewHeight / workspaceScale;
   var targetViewTopWorkspace = workspaceY - (visibleHeightWorkspace / 2);
@@ -475,25 +477,30 @@ Blockly.BlockOutline.prototype.dispose = function() {
 
 /**
  * Calculate canvas Y offset and scroll percentage for current viewport position.
- * @param {!Object} bounds Workspace bounds.
  * @param {!Object} metrics Workspace metrics.
  * @return {!Object} Object with scrollPercentage and canvasOffsetY.
  * @private
  */
-Blockly.BlockOutline.prototype.calculateScrollOffset_ = function(bounds, metrics) {
+Blockly.BlockOutline.prototype.calculateScrollOffset_ = function(metrics) {
   var workspaceScale = this.workspace_.scale || 1;
   var viewportTopWorkspace = metrics.viewTop / workspaceScale;
   var visibleHeightWorkspace = metrics.viewHeight / workspaceScale;
-  var workspaceScrollableHeight = Math.max(0, bounds.height - visibleHeightWorkspace);
-  var currentScrollY = viewportTopWorkspace - bounds.minY;
+
+  // Use metrics.contentHeight which includes the scrollable blank area (half viewport height at bottom)
+  var totalContentHeightWorkspace = metrics.contentHeight / workspaceScale;
+  var workspaceScrollableHeight = Math.max(0, totalContentHeightWorkspace - visibleHeightWorkspace);
+
+  // Calculate scroll position relative to content top
+  var contentTopWorkspace = metrics.contentTop / workspaceScale;
+  var currentScrollY = viewportTopWorkspace - contentTopWorkspace;
 
   var scrollPercentage = 0;
   if (workspaceScrollableHeight > 0) {
     scrollPercentage = Math.max(0, Math.min(1, currentScrollY / workspaceScrollableHeight));
   }
 
-  // Include margins in minimap height calculation
-  var contentHeight = bounds.height * this.scale_;
+  // Calculate minimap height including the scrollable area
+  var contentHeight = totalContentHeightWorkspace * this.scale_;
   var bottomMargin = this.verticalOffset_;
   var totalMinimapHeight = contentHeight + this.verticalOffset_ + bottomMargin;
   var minimapScrollableHeight = Math.max(0, totalMinimapHeight - metrics.viewHeight);
@@ -560,6 +567,10 @@ Blockly.BlockOutline.prototype.renderBlockOnCanvas_ = function(block, boundsOffs
   if (!block.getSvgRoot() || !this.ctx_) return;
 
   var svgRoot = block.getSvgRoot();
+
+  // Skip rendering if block is hidden (collapsed)
+  if (!svgRoot.parentNode) return;
+
   var blockPosition = block.getRelativeToSurfaceXY();
 
   // Get the main path element that defines the block shape
@@ -674,7 +685,7 @@ Blockly.BlockOutline.prototype.updateViewportIndicator = function() {
   var viewHeight = actualVisibleHeight * this.scale_;
 
   // Calculate scroll offset using shared helper
-  var scrollInfo = this.calculateScrollOffset_(bounds, metrics);
+  var scrollInfo = this.calculateScrollOffset_(metrics);
   this.canvasOffsetY_ = scrollInfo.canvasOffsetY;
 
   // Move canvas up/down using CSS top property
@@ -682,8 +693,10 @@ Blockly.BlockOutline.prototype.updateViewportIndicator = function() {
     this.canvas_.style.top = (-this.canvasOffsetY_) + 'px';
   }
 
-  // Calculate viewport indicator position (include top margin)
-  var viewYInCanvas = (viewportTopWorkspace - bounds.minY) * this.scale_ + this.verticalOffset_;
+  // Calculate viewport indicator position based on content top (not bounds.minY)
+  // This ensures proper alignment with the scrollable area including blank space
+  var contentTopWorkspace = metrics.contentTop / workspaceScale;
+  var viewYInCanvas = (viewportTopWorkspace - contentTopWorkspace) * this.scale_ + this.verticalOffset_;
   var viewX = 0;
   var viewY = viewYInCanvas - this.canvasOffsetY_; // Adjust for canvas offset
   var viewWidth = Blockly.BlockOutline.WIDTH;
@@ -723,10 +736,18 @@ Blockly.BlockOutline.prototype.refreshNow_ = function() {
   var bounds = this.getWorkspaceBounds_();
 
   if (bounds.width === 0 || bounds.height === 0) {
+    // Clear canvas when no blocks exist
+    this.ctx_.clearRect(0, 0, this.canvas_.width, this.canvas_.height);
+    // Hide viewport indicator
+    if (this.viewportIndicator_) {
+      this.viewportIndicator_.setAttribute('width', 0);
+      this.viewportIndicator_.setAttribute('height', 0);
+    }
     return;
   }
 
   var metrics = this.workspace_.getMetrics();
+  var workspaceScale = this.workspace_.scale || 1;
 
   // Calculate dynamic scale to fit content width
   // Only recalculate if block count changed or bounds are invalid
@@ -754,8 +775,9 @@ Blockly.BlockOutline.prototype.refreshNow_ = function() {
     this.lastBlockCount_ = currentBlockCount;
   }
 
-  // Now calculate canvas height with the correct scale
-  var contentHeight = bounds.height * this.scale_;
+  // Calculate canvas height based on total scrollable area (including blank space at bottom)
+  var totalContentHeightWorkspace = metrics.contentHeight / workspaceScale;
+  var contentHeight = totalContentHeightWorkspace * this.scale_;
   var bottomMargin = this.verticalOffset_; // Same as top margin
   var canvasHeight = Math.max(metrics.viewHeight, contentHeight + this.verticalOffset_ + bottomMargin);
 
@@ -773,9 +795,11 @@ Blockly.BlockOutline.prototype.refreshNow_ = function() {
   this.ctx_.clearRect(0, 0, this.canvas_.width, this.canvas_.height);
 
   // Render all top-level blocks
+  // Blocks are positioned relative to contentTop, not bounds.minY
+  var contentTopWorkspace = metrics.contentTop / workspaceScale;
   var topBlocks = this.workspace_.getTopBlocks(false);
   for (var i = 0; i < topBlocks.length; i++) {
-    this.renderBlockOnCanvas_(topBlocks[i], bounds.minX, bounds.minY);
+    this.renderBlockOnCanvas_(topBlocks[i], bounds.minX, contentTopWorkspace);
   }
 
   // Update viewport indicator

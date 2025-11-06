@@ -607,6 +607,15 @@ Blockly.Xml.domToBlock = function(xmlBlock, workspace) {
         setTimeout(function() {
           if (topBlock.workspace) {  // Check that the block hasn't been deleted.
             topBlock.setConnectionsHidden(false);
+
+            // Restore collapse states for all blocks loaded from XML
+            var allBlocks = topBlock.getDescendants(true);
+            for (var i = 0; i < allBlocks.length; i++) {
+              var block = allBlocks[i];
+              if (block.restoreCollapseState_) {
+                block.restoreCollapseState_();
+              }
+            }
           }
         }, 1);
       }

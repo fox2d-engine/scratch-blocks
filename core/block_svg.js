@@ -28,6 +28,7 @@ goog.provide('Blockly.BlockSvg');
 
 goog.require('Blockly.Block');
 goog.require('Blockly.BlockAnimations');
+goog.require('Blockly.CollapseIcon');
 goog.require('Blockly.ContextMenu');
 goog.require('Blockly.Events.Ui');
 goog.require('Blockly.Events.BlockMove');
@@ -156,6 +157,8 @@ Blockly.BlockSvg.prototype.initSvg = function() {
       input.init();
       input.initOutlinePath(this.svgGroup_);
     }
+    // Check if collapse icon is needed for topLevel blocks
+    this.updateCollapseIcon_();
     var icons = this.getIcons();
     for (i = 0; i < icons.length; i++) {
       icons[i].createIcon();
@@ -262,7 +265,7 @@ Blockly.BlockSvg.prototype.comment = null;
 Blockly.BlockSvg.prototype.warning = null;
 
 /**
- * Returns a list of mutator, comment, and warning icons.
+ * Returns a list of mutator, comment, warning, and collapse icons.
  * @return {!Array} List of icons.
  */
 Blockly.BlockSvg.prototype.getIcons = function() {
@@ -275,6 +278,12 @@ Blockly.BlockSvg.prototype.getIcons = function() {
   }
   if (this.warning) {
     icons.push(this.warning);
+  }
+  // Add all collapse icons
+  if (this.collapseIcons_) {
+    for (var inputName in this.collapseIcons_) {
+      icons.push(this.collapseIcons_[inputName]);
+    }
   }
   return icons;
 };
@@ -352,6 +361,350 @@ Blockly.BlockSvg.prototype.setParent = function(newParent) {
     this.translate(oldXY.x, oldXY.y);
   }
 
+  // Update collapse icon when becoming or losing topLevel status
+  this.updateCollapseIcon_();
+};
+
+/**
+ * Update collapse icons - now handled by the collapse gutter.
+ * This method is kept for compatibility but doesn't create any icons.
+ * @private
+ */
+Blockly.BlockSvg.prototype.updateCollapseIcon_ = function() {
+  // Collapse icons are now managed by the workspace's collapse gutter
+  // No need to create individual icons on blocks
+  // Collapse state restoration is handled in xml.js after blocks are fully loaded
+};
+
+/**
+ * Restore collapse state from workspace's saved state map.
+ * This should be called after block is fully loaded and rendered.
+ * @private
+ */
+Blockly.BlockSvg.prototype.restoreCollapseState_ = function() {
+  if (!this.workspace || !this.workspace.blockCollapseStates_) {
+    return;
+  }
+
+  var blockState = this.workspace.blockCollapseStates_[this.id];
+  if (!blockState) {
+    return;
+  }
+
+  // Disable event recording during state restoration
+  // We don't want to create undo events for restoring saved state
+  var wasRecordingUndo = Blockly.Events.recordUndo;
+  Blockly.Events.recordUndo = false;
+
+  try {
+    // Check if any input should be collapsed but isn't
+    for (var inputName in blockState) {
+      if (blockState[inputName]) {
+        // Check if this input is actually collapsed in the DOM
+        var needsCollapse = false;
+        if (inputName === '__next__') {
+          var nextBlock = this.getNextBlock();
+          if (nextBlock && !nextBlock.isCollapsedHidden_) {
+            needsCollapse = true;
+          }
+        } else {
+          var input = this.getInput(inputName);
+          if (input && input.connection) {
+            var substackBlock = input.connection.targetBlock();
+            if (substackBlock && !substackBlock.isCollapsedHidden_) {
+              needsCollapse = true;
+            }
+          }
+        }
+
+        if (needsCollapse) {
+          this.setSubstackCollapsed(inputName, true);
+        }
+      }
+    }
+  } finally {
+    // Restore event recording
+    Blockly.Events.recordUndo = wasRecordingUndo;
+  }
+};
+
+/**
+ * Check if this block has any substack (NEXT_STATEMENT) inputs.
+ * @return {boolean} True if block has substack inputs.
+ * @private
+ */
+Blockly.BlockSvg.prototype.hasSubstackInput_ = function() {
+  for (var i = 0; i < this.inputList.length; i++) {
+    if (this.inputList[i].type === Blockly.NEXT_STATEMENT) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Create or update collapse indicators for all collapsed substacks.
+ * Each collapsed substack gets its own end block indicator.
+ * Note: This creates/removes indicators but doesn't position them.
+ * Call positionCollapseIndicators_ after rendering to position them.
+ * @private
+ */
+Blockly.BlockSvg.prototype.updateCollapseIndicators_ = function() {
+  if (!this.collapseIndicators_) {
+    this.collapseIndicators_ = {};
+  }
+
+  if (!this.rendered) {
+    return;
+  }
+
+  // Check which substacks need indicators
+  var neededIndicators = {};
+
+  // Check hat block's next chain
+  var isHatBlock = !this.previousConnection;
+  if (isHatBlock && this.isSubstackCollapsed('__next__')) {
+    var count = this.getCollapsedBlockCountForSubstack_('__next__');
+    if (count > 0) {
+      neededIndicators['__next__'] = count;
+    }
+  }
+
+  // Check each substack input
+  for (var i = 0; i < this.inputList.length; i++) {
+    var input = this.inputList[i];
+    if (input.type === Blockly.NEXT_STATEMENT) {
+      if (this.type === 'procedures_definition' && input.name === 'custom_block') {
+        continue;
+      }
+      if (this.isSubstackCollapsed(input.name)) {
+        var count = this.getCollapsedBlockCountForSubstack_(input.name);
+        if (count > 0) {
+          neededIndicators[input.name] = count;
+        }
+      }
+    }
+  }
+
+  // Remove indicators that are no longer needed
+  for (var inputName in this.collapseIndicators_) {
+    if (!neededIndicators[inputName]) {
+      goog.dom.removeNode(this.collapseIndicators_[inputName]);
+      delete this.collapseIndicators_[inputName];
+    }
+  }
+
+  // Create or update needed indicators
+  for (var inputName in neededIndicators) {
+    var count = neededIndicators[inputName];
+    if (!this.collapseIndicators_[inputName]) {
+      this.collapseIndicators_[inputName] = this.createCollapseIndicator_(inputName, count);
+    } else {
+      // Update count in existing indicator
+      this.updateCollapseIndicatorCount_(this.collapseIndicators_[inputName], count);
+    }
+  }
+};
+
+/**
+ * Position all collapse indicators after rendering is complete.
+ * Only positions the '__next__' indicator (hat block's end block).
+ * C-shaped block indicators are positioned during rendering in renderDraw_.
+ * @private
+ */
+Blockly.BlockSvg.prototype.positionCollapseIndicators_ = function() {
+  if (!this.collapseIndicators_ || !this.rendered) {
+    return;
+  }
+
+  // Only position the '__next__' indicator for hat blocks
+  if (this.collapseIndicators_['__next__']) {
+    var indicator = this.collapseIndicators_['__next__'];
+    // Position at the bottom using the block's rendered height
+    var yPos = this.height;
+    indicator.setAttribute('transform', 'translate(0,' + yPos + ')');
+  }
+};
+
+/**
+ * Create a collapse indicator (end block) for a specific substack.
+ * @param {string} inputName The name of the substack input or '__next__'.
+ * @param {number} count Number of collapsed blocks.
+ * @return {!Element} The SVG group element.
+ * @private
+ */
+Blockly.BlockSvg.prototype.createCollapseIndicator_ = function(inputName, count) {
+  var indicator = Blockly.utils.createSvgElement('g', {
+    'class': 'blocklyCollapseIndicator',
+    'data-input-name': inputName
+  }, this.svgGroup_);
+
+  // Text content - same style as block text
+  var textContent = count === 1 ? '1 block collapsed' : count + ' blocks collapsed';
+  var text = Blockly.utils.createSvgElement('text', {
+    'x': 24,  // Moved right for better spacing
+    'y': 16,  // Moved down for better vertical alignment
+    'text-anchor': 'start',
+    'dominant-baseline': 'middle',
+    'fill': '#575E75',
+    'font-size': '12pt',
+    'font-weight': 'bold',
+    'font-family': '"Helvetica Neue", Helvetica, sans-serif',
+    'style': 'cursor: pointer; user-select: none;',
+    'class': 'blocklyCollapseIndicatorText'
+  }, indicator);
+  text.textContent = textContent;
+
+  // Add click handler to text
+  var block = this;
+  Blockly.bindEventWithChecks_(text, 'mousedown', this, function(e) {
+    if (block.workspace.isDragging()) {
+      return;
+    }
+    e.stopPropagation();
+    e.preventDefault();
+    block.setSubstackCollapsed(inputName, false);
+  });
+
+  // Add hover effect - make darker only
+  text.addEventListener('mouseenter', function() {
+    text.setAttribute('fill', '#2e3340');
+  });
+  text.addEventListener('mouseleave', function() {
+    text.setAttribute('fill', '#575E75');
+  });
+
+  return indicator;
+};
+
+/**
+ * Update the count displayed in a collapse indicator.
+ * @param {!Element} indicator The indicator element.
+ * @param {number} count New count.
+ * @private
+ */
+Blockly.BlockSvg.prototype.updateCollapseIndicatorCount_ = function(indicator, count) {
+  var text = indicator.querySelector('.blocklyCollapseIndicatorText');
+  if (text) {
+    var textContent = count === 1 ? '1 block collapsed' : count + ' blocks collapsed';
+    text.textContent = textContent;
+  }
+};
+
+/**
+ * Show a visual indicator for collapsed blocks as an end block.
+ * @param {number} count Number of collapsed blocks.
+ * @private
+ * @deprecated Use updateCollapseIndicators_ instead.
+ */
+Blockly.BlockSvg.prototype.showCollapseIndicator_ = function(count) {
+  if (!this.rendered) {
+    return;
+  }
+
+  // Remove existing indicator if any
+  this.hideCollapseIndicator_();
+
+  // Create indicator group positioned at the bottom of this block
+  this.collapseIndicator_ = Blockly.utils.createSvgElement('g', {
+    'class': 'blocklyCollapseIndicator'
+  }, this.svgGroup_);
+
+  // Get block color
+  var blockColor = this.getColour();
+  var tertiaryColor = this.getColourTertiary();
+
+  // Constants from block_render_svg_vertical.js
+  var CORNER_RADIUS = 4;
+  var NOTCH_WIDTH = 8 * 4;  // 8 * GRID_UNIT (4px)
+  var NOTCH_HEIGHT = 2 * 4; // 2 * GRID_UNIT
+  var NOTCH_START_PADDING = 3 * 4; // 3 * GRID_UNIT
+  var MIN_BLOCK_Y = 12 * 4; // Minimum block height
+
+  // End block dimensions
+  var blockWidth = 160;  // Wide enough for text
+  var blockHeight = MIN_BLOCK_Y;
+
+  // Position at the bottom of this block
+  var yOffset = this.height;
+
+  // Draw the end block shape as an SVG path
+  var steps = [];
+
+  // Start at top-left, after corner
+  steps.push('M', CORNER_RADIUS, yOffset);
+
+  // Top edge with previous notch (to visually connect with the collapsed block)
+  steps.push('H', CORNER_RADIUS + NOTCH_START_PADDING);
+  // Notch path (simplified from NOTCH_PATH_LEFT)
+  steps.push('v', -NOTCH_HEIGHT);
+  steps.push('h', NOTCH_WIDTH);
+  steps.push('v', NOTCH_HEIGHT);
+  // Continue to top-right corner
+  steps.push('H', blockWidth - CORNER_RADIUS);
+
+  // Top-right corner
+  steps.push('a', CORNER_RADIUS, CORNER_RADIUS, '0 0,1', CORNER_RADIUS, CORNER_RADIUS);
+
+  // Right edge
+  steps.push('V', yOffset + blockHeight - CORNER_RADIUS);
+
+  // Bottom-right corner
+  steps.push('a', CORNER_RADIUS, CORNER_RADIUS, '0 0,1', -CORNER_RADIUS, CORNER_RADIUS);
+
+  // Bottom edge (no notch - this is an end block)
+  steps.push('H', CORNER_RADIUS);
+
+  // Bottom-left corner
+  steps.push('a', CORNER_RADIUS, CORNER_RADIUS, '0 0,1', -CORNER_RADIUS, -CORNER_RADIUS);
+
+  // Close path
+  steps.push('Z');
+
+  // Create the main block path
+  Blockly.utils.createSvgElement('path', {
+    'd': steps.join(' '),
+    'fill': blockColor,
+    'stroke': tertiaryColor,
+    'stroke-width': '1',
+    'style': 'cursor: pointer;'
+  }, this.collapseIndicator_);
+
+  // Create text showing count (centered in the block)
+  var textContent = count === 1 ? '1 block collapsed' : count + ' blocks collapsed';
+  var text = Blockly.utils.createSvgElement('text', {
+    'x': blockWidth / 2,
+    'y': yOffset + blockHeight / 2,
+    'text-anchor': 'middle',
+    'dominant-baseline': 'central',
+    'fill': '#ffffff',
+    'font-size': '12px',
+    'font-weight': '600',
+    'style': 'cursor: pointer; user-select: none; pointer-events: none;'
+  }, this.collapseIndicator_);
+  text.textContent = textContent;
+
+  // Add click handler to expand
+  var block = this;
+  Blockly.bindEventWithChecks_(this.collapseIndicator_, 'mousedown', this, function(e) {
+    if (block.workspace.isDragging()) {
+      return;
+    }
+    e.stopPropagation();
+    e.preventDefault();
+    block.setStackCollapsed(false);
+  });
+};
+
+/**
+ * Hide the collapse indicator.
+ * @private
+ */
+Blockly.BlockSvg.prototype.hideCollapseIndicator_ = function() {
+  if (this.collapseIndicator_) {
+    goog.dom.removeNode(this.collapseIndicator_);
+    this.collapseIndicator_ = null;
+  }
 };
 
 /**
@@ -874,6 +1227,37 @@ Blockly.BlockSvg.prototype.getSvgRoot = function() {
 };
 
 /**
+ * Hide this block's SVG from the DOM, but keep all connection data intact.
+ * Used for stack collapse functionality.
+ * @private
+ */
+Blockly.BlockSvg.prototype.hideFromDom_ = function() {
+  if (this.svgGroup_ && this.svgGroup_.parentNode) {
+    // Store the parent so we can restore it later
+    this.svgParent_ = this.svgGroup_.parentNode;
+    // Remove from DOM
+    this.svgGroup_.parentNode.removeChild(this.svgGroup_);
+  }
+};
+
+/**
+ * Show this block's SVG in the DOM after being hidden.
+ * Used for stack collapse functionality.
+ * @param {boolean=} skipRender If true, don't render after showing.
+ * @private
+ */
+Blockly.BlockSvg.prototype.showInDom_ = function(skipRender) {
+  if (this.svgGroup_ && this.svgParent_ && !this.svgGroup_.parentNode) {
+    // Add back to the stored parent
+    this.svgParent_.appendChild(this.svgGroup_);
+    // Render to ensure proper display (unless skipped for batch operations)
+    if (!skipRender && this.rendered) {
+      this.render();
+    }
+  }
+};
+
+/**
  * Dispose of this block.
  * @param {boolean} healStack If true, then try to heal any gap by connecting
  *     the next statement with the previous statement.  Otherwise, dispose of
@@ -913,6 +1297,8 @@ Blockly.BlockSvg.prototype.dispose = function(healStack, animate) {
     for (var i = 0; i < icons.length; i++) {
       icons[i].dispose();
     }
+    // Clean up collapse indicator
+    this.hideCollapseIndicator_();
   } finally {
     Blockly.Events.enable();
   }

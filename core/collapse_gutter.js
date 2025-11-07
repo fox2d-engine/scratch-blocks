@@ -138,14 +138,14 @@ Blockly.CollapseGutter.prototype.createDom = function() {
   // Hover effects (same as minimap) - save listeners for cleanup
   var self = this;
   this.eventListeners_.push(
-    Blockly.bindEvent_(this.svgGroup_, 'mouseenter', null, function() {
-      self.svgGroup_.setAttribute('opacity', '0.8');
-    })
+      Blockly.bindEvent_(this.svgGroup_, 'mouseenter', null, function() {
+        self.svgGroup_.setAttribute('opacity', '0.8');
+      })
   );
   this.eventListeners_.push(
-    Blockly.bindEvent_(this.svgGroup_, 'mouseleave', null, function() {
-      self.svgGroup_.setAttribute('opacity', '0.5');
-    })
+      Blockly.bindEvent_(this.svgGroup_, 'mouseleave', null, function() {
+        self.svgGroup_.setAttribute('opacity', '0.5');
+      })
   );
 
   return this.svgGroup_;
@@ -244,7 +244,7 @@ Blockly.CollapseGutter.prototype.createButton_ = function(block, inputName) {
   }, null);
 
   // Transparent circle for larger click area (invisible)
-  var clickArea = Blockly.utils.createSvgElement('circle', {
+  Blockly.utils.createSvgElement('circle', {
     'r': '10',
     'fill': 'transparent',
     'stroke': 'none'

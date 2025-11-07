@@ -236,9 +236,9 @@ Blockly.CollapseIcon.prototype.isVisible = function() {
 
 /**
  * This icon doesn't have a bubble to show/hide.
- * @param {boolean} visible Ignored.
+ * @param {boolean} _visible Ignored.
  */
-Blockly.CollapseIcon.prototype.setVisible = function(visible) {
+Blockly.CollapseIcon.prototype.setVisible = function(_visible) {
   // No-op, this icon doesn't have a bubble
 };
 

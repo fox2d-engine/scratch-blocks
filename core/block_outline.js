@@ -331,7 +331,6 @@ Blockly.BlockOutline.prototype.onMinimapClick_ = function(e) {
   var matrix = this.svgGroup_.getScreenCTM().inverse();
   point = point.matrixTransform(matrix);
 
-  var bounds = this.getWorkspaceBounds_();
   var metrics = this.workspace_.getMetrics();
   var workspaceScale = this.workspace_.scale || 1;
 

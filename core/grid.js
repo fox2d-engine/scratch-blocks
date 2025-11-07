@@ -325,7 +325,7 @@ Blockly.Grid.prototype.showColumnGuide = function(block, targetY, opt_showProjec
     var defs = this.columnGuideGroup_.ownerDocument.querySelector('defs');
     if (!defs) {
       defs = Blockly.utils.createSvgElement('defs', {},
-        this.columnGuideGroup_.ownerSVGElement);
+          this.columnGuideGroup_.ownerSVGElement);
     }
 
     var gradient = Blockly.utils.createSvgElement('linearGradient', {
@@ -355,7 +355,7 @@ Blockly.Grid.prototype.showColumnGuide = function(block, targetY, opt_showProjec
     }, gradient);
 
     // Create wider shadow layer (outer)
-    var shadow = Blockly.utils.createSvgElement('line', {
+    Blockly.utils.createSvgElement('line', {
       'x1': 48,
       'y1': targetY,
       'x2': 48,
@@ -366,7 +366,7 @@ Blockly.Grid.prototype.showColumnGuide = function(block, targetY, opt_showProjec
     }, this.columnGuideGroup_);
 
     // Create sharper projection line (inner)
-    var projection = Blockly.utils.createSvgElement('line', {
+    Blockly.utils.createSvgElement('line', {
       'x1': 48,
       'y1': targetY,
       'x2': 48,

@@ -100,6 +100,86 @@ Blockly.WorkspaceSvg = function(options, opt_blockDragSurface, opt_wsDragSurface
   this.highlightedBlocks_ = [];
 
   /**
+   * Whether the modifier key (Cmd/Ctrl) is currently pressed.
+   * Used for block hover highlighting.
+   * @type {boolean}
+   * @private
+   */
+  this.modifierKeyPressed_ = false;
+
+  /**
+   * Last hovered block when modifier key is pressed.
+   * @type {Blockly.BlockSvg}
+   * @private
+   */
+  this.lastHoveredBlock_ = null;
+
+  /**
+   * Last dimmed blocks (siblings and parent) when modifier key is pressed.
+   * @type {!Array<!Blockly.BlockSvg>}
+   * @private
+   */
+  this.lastDimmedBlocks_ = [];
+
+  /**
+   * Throttle timer for block hover events.
+   * @type {?number}
+   * @private
+   */
+  this.hoverThrottleTimer_ = null;
+
+  /**
+   * Whether we are in keyboard navigation mode (arrow keys were used).
+   * In this mode, the highlight is locked to the current block and doesn't follow the mouse.
+   * @type {boolean}
+   * @private
+   */
+  this.keyboardNavigationMode_ = false;
+
+  /**
+   * List of blocks that are currently highlighted.
+   * Used to ensure all highlighted blocks are cleared when exiting.
+   * @type {!Array<!Blockly.BlockSvg>}
+   * @private
+   */
+  this.highlightedBlocks_list_ = [];
+
+  /**
+   * Whether we are in selection mode (click to select blocks for keyboard movement).
+   * @type {boolean}
+   * @private
+   */
+  this.selectionMode_ = false;
+
+  /**
+   * Currently selected block for keyboard navigation.
+   * @type {Blockly.BlockSvg}
+   * @private
+   */
+  this.selectedBlock_ = null;
+
+  /**
+   * Timestamp of the last click on empty workspace (for triple-click detection).
+   * @type {Array<number>}
+   * @private
+   */
+  this.lastClickTimes_ = [];
+
+  /**
+   * List of all blocks that are dimmed in selection mode.
+   * @type {!Array<!Blockly.BlockSvg>}
+   * @private
+   */
+  this.allDimmedBlocks_ = [];
+
+  /**
+   * List of all selected blocks (for multi-selection).
+   * @type {!Array<!Blockly.BlockSvg>}
+   * @private
+   */
+  this.selectedBlocks_ = [];
+
+  /**
    * Object in charge of loading, storing, and playing audio for a workspace.
    * @type {Blockly.WorkspaceAudio}
    * @private
@@ -583,6 +663,17 @@ Blockly.WorkspaceSvg.prototype.createDom = function(opt_backgroundClass) {
       Blockly.bindEventWithChecks_(this.svgGroup_, 'wheel', this,
           this.onMouseWheel_);
     }
+    // Add keyboard event listeners for modifier key tracking
+    this.modifierKeyDownListener_ = this.onModifierKeyDown_.bind(this);
+    this.modifierKeyUpListener_ = this.onModifierKeyUp_.bind(this);
+    document.addEventListener('keydown', this.modifierKeyDownListener_);
+    document.addEventListener('keyup', this.modifierKeyUpListener_);
+
+    // Add hover event listeners for block highlighting (using event delegation)
+    this.blockHoverListener_ = this.onBlockHover_.bind(this);
+    this.blockUnhoverListener_ = this.onBlockUnhover_.bind(this);
+    this.svgBlockCanvas_.addEventListener('mouseover', this.blockHoverListener_, false);
+    this.svgBlockCanvas_.addEventListener('mouseout', this.blockUnhoverListener_, false);
   }
 
   this.intersectionObserver = new Blockly.IntersectionObserver(this);
@@ -614,6 +705,32 @@ Blockly.WorkspaceSvg.prototype.createDom = function(opt_backgroundClass) {
 Blockly.WorkspaceSvg.prototype.dispose = function() {
   // Stop rerendering.
   this.rendered = false;
+
+  // Remove keyboard event listeners
+  if (this.modifierKeyDownListener_) {
+    document.removeEventListener('keydown', this.modifierKeyDownListener_);
+    this.modifierKeyDownListener_ = null;
+  }
+  if (this.modifierKeyUpListener_) {
+    document.removeEventListener('keyup', this.modifierKeyUpListener_);
+    this.modifierKeyUpListener_ = null;
+  }
+
+  // Remove block hover event listeners
+  if (this.blockHoverListener_ && this.svgBlockCanvas_) {
+    this.svgBlockCanvas_.removeEventListener('mouseover', this.blockHoverListener_);
+    this.blockHoverListener_ = null;
+  }
+  if (this.blockUnhoverListener_ && this.svgBlockCanvas_) {
+    this.svgBlockCanvas_.removeEventListener('mouseout', this.blockUnhoverListener_);
+    this.blockUnhoverListener_ = null;
+  }
+
+  // Clear hover throttle timer
+  if (this.hoverThrottleTimer_) {
+    clearTimeout(this.hoverThrottleTimer_);
+    this.hoverThrottleTimer_ = null;
+  }
 
   // Cleanup auto-layout
   this.cleanupAutoLayout_();
@@ -1488,6 +1605,48 @@ Blockly.WorkspaceSvg.prototype.isInsideBlocksArea = function(e) {
  * @private
  */
 Blockly.WorkspaceSvg.prototype.onMouseDown_ = function(e) {
+  var block = this.getBlockFromEvent_(e);
+
+  // Handle selection mode clicks
+  if (this.selectionMode_) {
+    if (block) {
+      // Select the block instead of starting a gesture
+      this.selectBlock_(block);
+      e.stopPropagation();
+      e.preventDefault();
+      return;
+    } else {
+      // Clicked on empty space - deselect
+      if (this.selectedBlock_) {
+        this.deselectBlock_();
+      }
+    }
+  }
+
+  // Triple-click detection on empty workspace to toggle selection mode
+  if (!block) {
+    var now = Date.now();
+    this.lastClickTimes_.push(now);
+
+    // Keep only the last 3 click times
+    if (this.lastClickTimes_.length > 3) {
+      this.lastClickTimes_.shift();
+    }
+
+    // Check if we have 3 clicks within 600ms
+    if (this.lastClickTimes_.length === 3) {
+      var timeSinceFirstClick = now - this.lastClickTimes_[0];
+      if (timeSinceFirstClick < 600) {
+        // Triple-click detected! Toggle selection mode
+        this.toggleSelectionMode();
+        this.lastClickTimes_ = []; // Reset click times
+        e.stopPropagation();
+        e.preventDefault();
+        return;
+      }
+    }
+  }
+
   var gesture = this.getGesture(e);
   if (gesture) {
     gesture.handleWsStart(e, this);
@@ -1584,6 +1743,1617 @@ Blockly.WorkspaceSvg.prototype.onMouseWheel_ = function(e) {
     this.scroll(x, y);
   }
   e.preventDefault();
+};
+
+/**
+ * Handle modifier key (Cmd/Ctrl) down event.
+ * @param {!KeyboardEvent} e Keyboard event.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.onModifierKeyDown_ = function(e) {
+  // Handle selection mode keyboard navigation
+  if (this.selectionMode_ && this.selectedBlock_) {
+    var handled = false;
+    var metaKey = e.metaKey || e.ctrlKey; // Cmd on Mac, Ctrl on Windows/Linux
+
+    // Cmd/Ctrl + D: Duplicate block
+    if (metaKey && e.key === 'd') {
+      handled = this.duplicateSelectedBlock_();
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    // Alt + Arrow keys: Move block
+    if (e.altKey) {
+      switch (e.key) {
+        case 'ArrowUp':
+          handled = this.moveBlockUp_(this.selectedBlock_);
+          if (handled) {
+            this.selectBlock_(this.selectedBlock_); // Refresh selection visuals
+          }
+          break;
+        case 'ArrowDown':
+          handled = this.moveBlockDown_(this.selectedBlock_);
+          if (handled) {
+            this.selectBlock_(this.selectedBlock_); // Refresh selection visuals
+          }
+          break;
+        case 'ArrowLeft':
+          handled = this.moveBlockLeft_(this.selectedBlock_);
+          if (handled) {
+            this.selectBlock_(this.selectedBlock_); // Refresh selection visuals
+          }
+          break;
+        case 'ArrowRight':
+          handled = this.moveBlockRight_(this.selectedBlock_);
+          if (handled) {
+            this.selectBlock_(this.selectedBlock_); // Refresh selection visuals
+          }
+          break;
+      }
+    } else if (!metaKey) { // Only handle pure arrow keys (no Cmd/Ctrl)
+      // Pure arrow keys: Change focus
+      switch (e.key) {
+        case 'ArrowUp':
+          handled = this.selectPreviousSibling_();
+          break;
+        case 'ArrowDown':
+          handled = this.selectNextSibling_();
+          break;
+        case 'ArrowLeft':
+          handled = this.selectParentBlock_();
+          break;
+        case 'ArrowRight':
+          handled = this.selectFirstChild_();
+          break;
+        case 'Escape':
+          this.deselectBlock_();
+          handled = true;
+          break;
+        case 'Delete':
+        case 'Backspace':
+          handled = this.deleteSelectenBlock_();
+          break;
+      }
+    }
+
+    if (handled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+};
+
+/**
+ * Handle modifier key (Cmd/Ctrl) up event.
+ * @param {!KeyboardEvent} _e Keyboard event.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.onModifierKeyUp_ = function(_e) {
+  // No longer needed - CMD/Ctrl hover functionality removed
+};
+
+/**
+ * Clear all hover highlighting and dimming effects from blocks.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.clearBlockHoverEffects_ = function() {
+  // Remove highlight from all tracked highlighted blocks
+  if (this.highlightedBlocks_list_) {
+    for (var i = 0; i < this.highlightedBlocks_list_.length; i++) {
+      var block = this.highlightedBlocks_list_[i];
+      if (block && block.svgGroup_) {
+        block.removeHoverHighlight();
+      }
+    }
+    this.highlightedBlocks_list_ = [];
+  }
+
+  // Also try to remove from lastHoveredBlock and its children as fallback
+  if (this.lastHoveredBlock_) {
+    this.removeHighlightFromBlockAndChildren_(this.lastHoveredBlock_);
+    this.lastHoveredBlock_ = null;
+  }
+
+  // Remove dimming classes from all previously dimmed blocks
+  // BUT: In selection mode, don't clear dimming since all blocks should stay dimmed
+  if (!this.selectionMode_ && this.lastDimmedBlocks_) {
+    for (var i = 0; i < this.lastDimmedBlocks_.length; i++) {
+      var block = this.lastDimmedBlocks_[i];
+      if (block && block.svgGroup_) {
+        Blockly.utils.removeClass(block.svgGroup_, 'blocklyDimmedContainer');
+        Blockly.utils.removeClass(block.svgGroup_, 'blocklyDimmedNext');
+      }
+    }
+    this.lastDimmedBlocks_ = [];
+  }
+};
+
+/**
+ * Recursively remove highlight from a block and all its child blocks.
+ * @param {!Blockly.BlockSvg} block The block to remove highlight from.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.removeHighlightFromBlockAndChildren_ = function(block) {
+  if (!block || !block.svgGroup_) {
+    return;
+  }
+
+  // Remove the highlight class from this block
+  block.removeHoverHighlight();
+
+  // Recursively remove highlight from all child blocks
+  var children = block.getChildren(false);
+  for (var i = 0; i < children.length; i++) {
+    this.removeHighlightFromBlockAndChildren_(children[i]);
+  }
+};
+
+/**
+ * Recursively dim a block and all its child blocks.
+ * Does NOT dim next blocks (blocks connected via nextConnection).
+ * @param {!Blockly.BlockSvg} block The block to dim.
+ * @param {string} className The CSS class to add ('blocklyDimmedContainer' or 'blocklyDimmedNext').
+ * @param {!Array<!Blockly.BlockSvg>} dimmedList Array to track dimmed blocks.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.dimBlockAndChildren_ = function(block, className, dimmedList) {
+  if (!block || !block.svgGroup_) {
+    return;
+  }
+
+  // Add the dimming class to this block
+  Blockly.utils.addClass(block.svgGroup_, className);
+  dimmedList.push(block);
+
+  // Recursively dim child blocks connected via input connections
+  // For each input connection, also process the entire next chain within that substack
+  for (var i = 0; i < block.inputList.length; i++) {
+    var input = block.inputList[i];
+    if (input.connection) {
+      var childBlock = input.connection.targetBlock();
+      // Process the first block in the input
+      if (childBlock) {
+        this.dimBlockAndChildren_(childBlock, className, dimmedList);
+        // Also process all blocks in the next chain within this substack
+        var nextBlock = childBlock.nextConnection && childBlock.nextConnection.targetBlock();
+        while (nextBlock) {
+          this.dimBlockAndChildren_(nextBlock, className, dimmedList);
+          nextBlock = nextBlock.nextConnection && nextBlock.nextConnection.targetBlock();
+        }
+      }
+    }
+  }
+
+  // Do NOT process this block's own nextConnection (that's the sibling, not child)
+};
+
+/**
+ * Recursively remove dimming from a block and all its child blocks.
+ * Does NOT undim next blocks (blocks connected via nextConnection).
+ * @param {!Blockly.BlockSvg} block The block to undim.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.undimBlockAndChildren_ = function(block) {
+  if (!block || !block.svgGroup_) {
+    return;
+  }
+
+  // Remove dimming classes from this block
+  Blockly.utils.removeClass(block.svgGroup_, 'blocklyDimmedContainer');
+  Blockly.utils.removeClass(block.svgGroup_, 'blocklyDimmedNext');
+
+  // Recursively undim child blocks connected via input connections only
+  // Do NOT process next chains - they should remain dimmed
+  for (var i = 0; i < block.inputList.length; i++) {
+    var input = block.inputList[i];
+    if (input.connection) {
+      var childBlock = input.connection.targetBlock();
+      if (childBlock) {
+        this.undimBlockAndChildren_(childBlock);
+      }
+    }
+  }
+};
+
+/**
+ * Dim all blocks in the workspace.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.dimAllBlocks_ = function() {
+  // Initialize tracking array
+  this.allDimmedBlocks_ = [];
+
+  // Get all top-level blocks
+  var topBlocks = this.getTopBlocks(false);
+
+  // Dim each top block, its descendants, and its next chain
+  for (var i = 0; i < topBlocks.length; i++) {
+    var block = topBlocks[i];
+    // Dim this block and all its children (including substacks)
+    this.dimBlockAndChildren_(block, 'blocklyDimmedContainer', this.allDimmedBlocks_);
+
+    // Also dim all blocks in the next chain at this level
+    var nextBlock = block.nextConnection && block.nextConnection.targetBlock();
+    while (nextBlock) {
+      this.dimBlockAndChildren_(nextBlock, 'blocklyDimmedContainer', this.allDimmedBlocks_);
+      nextBlock = nextBlock.nextConnection && nextBlock.nextConnection.targetBlock();
+    }
+  }
+};
+
+/**
+ * Clear dimming from all blocks in the workspace.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.clearAllBlockDimming_ = function() {
+  if (this.allDimmedBlocks_) {
+    for (var i = 0; i < this.allDimmedBlocks_.length; i++) {
+      var block = this.allDimmedBlocks_[i];
+      if (block && block.svgGroup_) {
+        Blockly.utils.removeClass(block.svgGroup_, 'blocklyDimmedContainer');
+        Blockly.utils.removeClass(block.svgGroup_, 'blocklyDimmedNext');
+      }
+    }
+    this.allDimmedBlocks_ = [];
+  }
+};
+
+/**
+ * Recursively highlight a block and all its child blocks.
+ * Does NOT highlight next blocks (blocks connected via nextConnection).
+ * @param {!Blockly.BlockSvg} block The block to highlight.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.highlightBlockAndChildren_ = function(block) {
+  if (!block || !block.svgGroup_) {
+    return;
+  }
+
+  // Add the highlight class to this block
+  block.addHoverHighlight();
+
+  // Track this block for cleanup
+  if (!this.highlightedBlocks_list_) {
+    this.highlightedBlocks_list_ = [];
+  }
+  this.highlightedBlocks_list_.push(block);
+
+  // Recursively highlight child blocks connected via input connections
+  // For each input connection, also process the entire next chain within that substack
+  for (var i = 0; i < block.inputList.length; i++) {
+    var input = block.inputList[i];
+    if (input.connection) {
+      var childBlock = input.connection.targetBlock();
+      // Process the first block in the input
+      if (childBlock) {
+        this.highlightBlockAndChildren_(childBlock);
+        // Also process all blocks in the next chain within this substack
+        var nextBlock = childBlock.nextConnection && childBlock.nextConnection.targetBlock();
+        while (nextBlock) {
+          this.highlightBlockAndChildren_(nextBlock);
+          nextBlock = nextBlock.nextConnection && nextBlock.nextConnection.targetBlock();
+        }
+      }
+    }
+  }
+
+  // Do NOT process this block's own nextConnection (that's the sibling, not child)
+};
+
+/**
+ * Handle mouseover event on block canvas (event delegation).
+ * Throttled to avoid excessive processing during fast mouse movements.
+ * @param {!MouseEvent} e Mouse event.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.onBlockHover_ = function(e) {
+  if (!this.modifierKeyPressed_) {
+    return;
+  }
+
+  // Clear any pending throttle timer
+  if (this.hoverThrottleTimer_) {
+    clearTimeout(this.hoverThrottleTimer_);
+  }
+
+  // Throttle to 50ms to prevent excessive processing
+  var self = this;
+  this.hoverThrottleTimer_ = setTimeout(function() {
+    self.hoverThrottleTimer_ = null;
+    self.processBlockHover_(e);
+  }, 50);
+};
+
+/**
+ * Process block hover event (actual implementation).
+ * @param {!MouseEvent} e Mouse event.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.processBlockHover_ = function(e) {
+  if (!this.modifierKeyPressed_) {
+    return;
+  }
+
+  // In keyboard navigation mode, ignore mouse hover events
+  if (this.keyboardNavigationMode_) {
+    return;
+  }
+
+  var block = this.getBlockFromEvent_(e);
+  if (!block) {
+    return;
+  }
+
+  // Step 1: Find the draggable block (same logic as gesture handling)
+  // Shadow blocks should use their first non-shadow parent (unless it's a shadow argument reporter)
+  var shouldDuplicate = Blockly.scratchBlocksUtils &&
+                       Blockly.scratchBlocksUtils.isShadowArgumentReporter(block);
+
+  while (block && block.isShadow() && !shouldDuplicate) {
+    block = block.getParent();
+  }
+
+  if (!block) {
+    return;
+  }
+
+  // Only update if we're hovering over a different block than last time
+  if (this.lastHoveredBlock_ === block) {
+    return;
+  }
+
+  // Clear previous highlighting/dimming
+  this.clearBlockHoverEffects_();
+
+  if (!this.lastDimmedBlocks_) {
+    this.lastDimmedBlocks_ = [];
+  }
+
+  // Step 2: Recursively dim all parent blocks and their children (向上递归)
+  var parent = block.getParent();
+  while (parent) {
+    this.dimBlockAndChildren_(parent, 'blocklyDimmedContainer', this.lastDimmedBlocks_);
+    parent = parent.getParent();
+  }
+
+  // Step 3: Dim all next blocks and their children
+  var nextBlock = block.getNextBlock();
+  while (nextBlock) {
+    this.dimBlockAndChildren_(nextBlock, 'blocklyDimmedNext', this.lastDimmedBlocks_);
+    nextBlock = nextBlock.getNextBlock();
+  }
+
+  // Step 4: Highlight the current block AND all its children (will override any dimming via CSS priority)
+  // This must be done LAST so it overrides any dimming that may have affected this block or its children
+  this.highlightBlockAndChildren_(block);
+
+  this.lastHoveredBlock_ = block;
+};
+
+/**
+ * Handle mouseout event on block canvas (event delegation).
+ * @param {!MouseEvent} e Mouse event.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.onBlockUnhover_ = function(e) {
+  // When leaving a block, onBlockHover_ will be called for the new block (if any)
+  // So we don't need to do anything here - the new hover will clear old effects
+  // Only clear if we're leaving to empty space (no related block)
+  if (!this.modifierKeyPressed_) {
+    return;
+  }
+
+  var relatedTarget = e.relatedTarget;
+  if (!relatedTarget) {
+    // Moving to empty space, clear all effects
+    this.clearBlockHoverEffects_();
+    return;
+  }
+
+  // Check if we're moving to another block element
+  var element = relatedTarget;
+  var foundBlock = false;
+  while (element && element !== this.svgBlockCanvas_) {
+    if (element.dataset && element.dataset.id) {
+      foundBlock = true;
+      break;
+    }
+    element = element.parentElement;
+  }
+
+  // If not moving to another block, clear effects
+  if (!foundBlock) {
+    this.clearBlockHoverEffects_();
+  }
+};
+
+/**
+ * Get the block from a mouse event by traversing up the DOM tree.
+ * @param {!MouseEvent} e Mouse event.
+ * @return {Blockly.BlockSvg} The block or null.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.getBlockFromEvent_ = function(e) {
+  var element = e.target;
+  while (element && element !== this.svgBlockCanvas_) {
+    if (element.dataset && element.dataset.id) {
+      var blockId = element.dataset.id;
+      return this.getBlockById(blockId);
+    }
+    element = element.parentElement;
+  }
+  return null;
+};
+
+/**
+ * Toggle selection mode on/off.
+ */
+Blockly.WorkspaceSvg.prototype.toggleSelectionMode = function() {
+  this.selectionMode_ = !this.selectionMode_;
+
+  // Update button visual state
+  if (this.zoomControls_) {
+    if (this.selectionMode_) {
+      // Active state
+      if (this.zoomControls_.selectionModeBackground_) {
+        this.zoomControls_.selectionModeBackground_.setAttribute('fill', '#4C97FF');
+        this.zoomControls_.selectionModeBackground_.setAttribute('fill-opacity', '1');
+        this.zoomControls_.selectionModeBackground_.setAttribute('stroke', '#3373CC');
+      }
+      if (this.zoomControls_.selectionModeIcon_) {
+        this.zoomControls_.selectionModeIcon_.setAttribute('fill', '#FFFFFF');
+      }
+    } else {
+      // Inactive state
+      if (this.zoomControls_.selectionModeBackground_) {
+        this.zoomControls_.selectionModeBackground_.setAttribute('fill', '#ffffff');
+        this.zoomControls_.selectionModeBackground_.setAttribute('fill-opacity', '0.9');
+        this.zoomControls_.selectionModeBackground_.setAttribute('stroke', '#C0C0C0');
+      }
+      if (this.zoomControls_.selectionModeIcon_) {
+        this.zoomControls_.selectionModeIcon_.setAttribute('fill', '#575E75');
+      }
+    }
+  }
+
+  // When entering selection mode, dim all blocks
+  if (this.selectionMode_) {
+    this.dimAllBlocks_();
+  } else {
+    // When exiting selection mode, clear all dimming and selection
+    if (this.selectedBlock_) {
+      this.deselectBlock_();
+    }
+    this.clearAllBlockDimming_();
+  }
+};
+
+/**
+ * Select a block for keyboard navigation.
+ * @param {!Blockly.BlockSvg} block The block to select.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.selectBlock_ = function(block) {
+  if (!block) {
+    return;
+  }
+
+  // Find the draggable block (same logic as CMD+Hover)
+  var shouldDuplicate = Blockly.scratchBlocksUtils &&
+                       Blockly.scratchBlocksUtils.isShadowArgumentReporter(block);
+
+  while (block && block.isShadow() && !shouldDuplicate) {
+    block = block.getParent();
+  }
+
+  if (!block) {
+    return;
+  }
+
+  // Deselect previous block (this will re-dim it)
+  if (this.selectedBlock_) {
+    this.deselectBlock_();
+  }
+
+  // Select new block
+  this.selectedBlock_ = block;
+
+  // Apply selection visual (reuse highlighting logic)
+  this.highlightedBlocks_list_ = [];
+  this.highlightBlockAndChildren_(block);
+
+  // Remove dimming from the selected block and its children (they should be highlighted, not dimmed)
+  this.undimBlockAndChildren_(block);
+};
+
+/**
+ * Deselect the currently selected block.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.deselectBlock_ = function() {
+  if (!this.selectedBlock_) {
+    return;
+  }
+
+  var previouslySelectedBlock = this.selectedBlock_;
+
+  // Clear highlighting first
+  this.clearBlockHoverEffects_();
+
+  this.selectedBlock_ = null;
+
+  // Re-dim the previously selected block if still in selection mode
+  // This must happen AFTER clearing highlighting to ensure the highlight is gone
+  if (this.selectionMode_ && previouslySelectedBlock) {
+    this.dimBlockAndChildren_(previouslySelectedBlock, 'blocklyDimmedContainer', this.allDimmedBlocks_ || []);
+  }
+};
+
+/**
+ * Select the previous sibling block.
+ * If at the beginning of current substack, try to move to the last block of previous substack.
+ * @return {boolean} True if selection changed.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.selectPreviousSibling_ = function() {
+  if (!this.selectedBlock_) {
+    return false;
+  }
+
+  // Case 1: Has a previous sibling in the same chain
+  // We need to check if previousConnection is connected to another block's nextConnection
+  // (not to a parent block's statement input)
+  var previousBlock = null;
+  if (this.selectedBlock_.previousConnection &&
+      this.selectedBlock_.previousConnection.targetConnection) {
+    var targetConn = this.selectedBlock_.previousConnection.targetConnection;
+    var sourceBlock = targetConn.getSourceBlock();
+
+    // The key insight: we need to check if targetConn is the nextConnection of the source block
+    // If previousConnection connects to another block's nextConnection, it's a sibling
+    // If previousConnection connects to another block's statement input, it's a child-parent relationship
+    if (targetConn === sourceBlock.nextConnection) {
+      // This is connected to another block's nextConnection - it's a sibling
+      previousBlock = sourceBlock;
+    }
+  }
+
+  if (previousBlock) {
+    this.selectBlock_(previousBlock);
+    return true;
+  }
+
+  // Case 2: Check if this is a reporter block (has output connection)
+  // Try to find the previous reporter input in the same parent
+  if (this.selectedBlock_.outputConnection) {
+    var previousReporter = this.getPreviousReporterInput_(this.selectedBlock_);
+    if (previousReporter) {
+      this.selectBlock_(previousReporter);
+      return true;
+    }
+    // No previous reporter - this is the first reporter in the parent
+    // Navigate to the parent block (like pressing Left)
+    return this.selectParentBlock_();
+  }
+
+  // Case 3: No previous sibling - check if we're in a substack
+  // If yes, try to jump to the last block of the previous substack or reporter inputs
+  var surroundParent = this.selectedBlock_.getSurroundParent();
+
+  if (!surroundParent) {
+    // Not in a substack at all - this is a top-level block with no previous sibling
+    return false;
+  }
+
+  // Find which substack the current block is in
+  var currentSubstack = this.findCurrentSubstack_(this.selectedBlock_, surroundParent);
+
+  if (!currentSubstack) {
+    // Can't find current substack (shouldn't happen)
+    return false;
+  }
+
+  // First, search backwards through all previous substacks to find one with content
+  var checkSubstack = currentSubstack;
+  while (true) {
+    var previousSubstack = this.findPreviousSubstack_(checkSubstack, surroundParent);
+
+    if (!previousSubstack) {
+      // No more previous substacks - now try to jump to reporter inputs
+      var reporterInputs = this.getReporterInputsBefore_(currentSubstack, surroundParent);
+      if (reporterInputs.length > 0) {
+        // Select the last reporter input
+        var lastReporter = reporterInputs[reporterInputs.length - 1];
+        this.selectBlock_(lastReporter);
+        return true;
+      }
+      // No reporter inputs either - navigate to parent block (like pressing Left)
+      return this.selectParentBlock_();
+    }
+
+    var firstBlockInPrevSubstack = previousSubstack.targetBlock();
+
+    if (firstBlockInPrevSubstack) {
+      // Found a non-empty substack! Select its last block
+      var lastBlock = this.findLastBlockInChain_(firstBlockInPrevSubstack);
+      this.selectBlock_(lastBlock);
+      return true;
+    }
+
+    // This substack is empty, continue searching backwards
+    checkSubstack = previousSubstack;
+  }
+};
+
+/**
+ * Select the next sibling block.
+ * If at the end of current substack, try to move to the first block of next substack.
+ * For reporter blocks, try to move to the parent's substack.
+ * @return {boolean} True if selection changed.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.selectNextSibling_ = function() {
+  if (!this.selectedBlock_) {
+    return false;
+  }
+
+  // Case 1: Has a next sibling in the same chain
+  // Simply use getNextBlock() since nextConnection always connects to sibling blocks
+  var nextBlock = this.selectedBlock_.getNextBlock();
+  if (nextBlock) {
+    this.selectBlock_(nextBlock);
+    return true;
+  }
+
+  // Case 2: Check if this is a reporter block (has output connection)
+  // First try to jump to the next reporter input in the same parent
+  // If no next reporter, try to jump to the parent's first substack
+  if (this.selectedBlock_.outputConnection) {
+    // Try to find the next reporter input
+    var nextReporter = this.getNextReporterInput_(this.selectedBlock_);
+    if (nextReporter) {
+      this.selectBlock_(nextReporter);
+      return true;
+    }
+
+    // No next reporter - try to jump to parent's substack
+    var parent = this.selectedBlock_.getParent();
+    if (parent) {
+      // Find the first substack in the parent
+      var firstSubstack = parent.getFirstStatementConnection();
+      if (firstSubstack && firstSubstack.targetBlock()) {
+        this.selectBlock_(firstSubstack.targetBlock());
+        return true;
+      }
+    }
+    // No substack either - navigate to parent block (like pressing Left)
+    return this.selectParentBlock_();
+  }
+
+  // Case 3: No next sibling - at the end of current substack
+  // Try to jump to the first block of the next substack
+  var surroundParent = this.selectedBlock_.getSurroundParent();
+  if (!surroundParent) {
+    // Not in a substack at all
+    return false;
+  }
+
+  // Find which substack the current block is in
+  var currentSubstack = this.findCurrentSubstack_(this.selectedBlock_, surroundParent);
+  if (!currentSubstack) {
+    // Can't find current substack (shouldn't happen)
+    return false;
+  }
+
+  // Search forwards through all next substacks to find one with content
+  var checkSubstack = currentSubstack;
+  while (true) {
+    var nextSubstack = this.findNextSubstack_(checkSubstack, surroundParent);
+    if (!nextSubstack) {
+      // No more next substacks - navigate to parent block (like pressing Left)
+      return this.selectParentBlock_();
+    }
+
+    var firstBlockInNextSubstack = nextSubstack.targetBlock();
+    if (firstBlockInNextSubstack) {
+      // Found a non-empty substack! Select its first block
+      this.selectBlock_(firstBlockInNextSubstack);
+      return true;
+    }
+
+    // This substack is empty, continue searching forwards
+    checkSubstack = nextSubstack;
+  }
+};
+
+/**
+ * Select the parent (surround) block.
+ * @return {boolean} True if selection changed.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.selectParentBlock_ = function() {
+  if (!this.selectedBlock_) {
+    return false;
+  }
+
+  var parentBlock = this.selectedBlock_.getSurroundParent();
+  if (parentBlock) {
+    this.selectBlock_(parentBlock);
+    return true;
+  }
+  return false;
+};
+
+/**
+ * Select the first child block.
+ * Try reporter inputs (value inputs) first, then statement inputs (substacks).
+ * @return {boolean} True if selection changed.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.selectFirstChild_ = function() {
+  if (!this.selectedBlock_) {
+    return false;
+  }
+
+  // First, try to find reporter blocks in value inputs
+  for (var i = 0; i < this.selectedBlock_.inputList.length; i++) {
+    var input = this.selectedBlock_.inputList[i];
+    if (input.connection && input.connection.type === Blockly.INPUT_VALUE) {
+      var targetBlock = input.connection.targetBlock();
+      if (targetBlock) {
+        this.selectBlock_(targetBlock);
+        return true;
+      }
+    }
+  }
+
+  // If no reporter inputs, try statement inputs (substacks)
+  var firstStatementConnection = this.selectedBlock_.getFirstStatementConnection();
+  if (firstStatementConnection && firstStatementConnection.targetBlock()) {
+    this.selectBlock_(firstStatementConnection.targetBlock());
+    return true;
+  }
+
+  return false;
+};
+
+/**
+ * Get all reporter (value input) blocks that come before a given substack.
+ * @param {!Blockly.Connection} substackConnection The substack connection.
+ * @param {!Blockly.BlockSvg} parentBlock The parent block.
+ * @return {!Array<!Blockly.BlockSvg>} Array of reporter blocks.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.getReporterInputsBefore_ = function(substackConnection, parentBlock) {
+  var reporters = [];
+
+  if (!substackConnection || !parentBlock) {
+    return reporters;
+  }
+
+  // Find the index of the substack
+  var substackIndex = -1;
+  for (var i = 0; i < parentBlock.inputList.length; i++) {
+    if (parentBlock.inputList[i].connection === substackConnection) {
+      substackIndex = i;
+      break;
+    }
+  }
+
+  if (substackIndex === -1) {
+    return reporters;
+  }
+
+  // Collect all reporter blocks that come before this substack
+  for (var i = 0; i < substackIndex; i++) {
+    var input = parentBlock.inputList[i];
+    if (input.connection && input.connection.type === Blockly.INPUT_VALUE) {
+      var targetBlock = input.connection.targetBlock();
+      if (targetBlock) {
+        reporters.push(targetBlock);
+      }
+    }
+  }
+
+  return reporters;
+};
+
+/**
+ * Find the next reporter input after the current reporter block.
+ * @param {!Blockly.BlockSvg} currentReporter The current reporter block.
+ * @return {Blockly.BlockSvg} The next reporter block or null.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.getNextReporterInput_ = function(currentReporter) {
+  if (!currentReporter || !currentReporter.outputConnection) {
+    return null;
+  }
+
+  var parent = currentReporter.getParent();
+  if (!parent) {
+    return null;
+  }
+
+  // Find the index of the current reporter's input
+  var currentInputIndex = -1;
+  for (var i = 0; i < parent.inputList.length; i++) {
+    var input = parent.inputList[i];
+    if (input.connection &&
+        input.connection.type === Blockly.INPUT_VALUE &&
+        input.connection.targetBlock() === currentReporter) {
+      currentInputIndex = i;
+      break;
+    }
+  }
+
+  if (currentInputIndex === -1) {
+    return null;
+  }
+
+  // Look for the next value input after this one
+  for (var i = currentInputIndex + 1; i < parent.inputList.length; i++) {
+    var input = parent.inputList[i];
+    if (input.connection && input.connection.type === Blockly.INPUT_VALUE) {
+      var targetBlock = input.connection.targetBlock();
+      if (targetBlock) {
+        return targetBlock;
+      }
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Find the previous reporter input before the current reporter block.
+ * @param {!Blockly.BlockSvg} currentReporter The current reporter block.
+ * @return {Blockly.BlockSvg} The previous reporter block or null.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.getPreviousReporterInput_ = function(currentReporter) {
+  if (!currentReporter || !currentReporter.outputConnection) {
+    return null;
+  }
+
+  var parent = currentReporter.getParent();
+  if (!parent) {
+    return null;
+  }
+
+  // Find the index of the current reporter's input
+  var currentInputIndex = -1;
+  for (var i = 0; i < parent.inputList.length; i++) {
+    var input = parent.inputList[i];
+    if (input.connection &&
+        input.connection.type === Blockly.INPUT_VALUE &&
+        input.connection.targetBlock() === currentReporter) {
+      currentInputIndex = i;
+      break;
+    }
+  }
+
+  if (currentInputIndex === -1) {
+    return null;
+  }
+
+  // Look backwards for the previous value input before this one
+  for (var i = currentInputIndex - 1; i >= 0; i--) {
+    var input = parent.inputList[i];
+    if (input.connection && input.connection.type === Blockly.INPUT_VALUE) {
+      var targetBlock = input.connection.targetBlock();
+      if (targetBlock) {
+        return targetBlock;
+      }
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Find which substack (input_statement connection) contains the given block.
+ * @param {!Blockly.BlockSvg} block The block to find.
+ * @param {!Blockly.BlockSvg} parentBlock The parent block to search.
+ * @return {Blockly.Connection} The statement connection or null.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.findCurrentSubstack_ = function(block, parentBlock) {
+  if (!block || !parentBlock) {
+    return null;
+  }
+
+  // Iterate through all inputs of the parent block
+  for (var i = 0; i < parentBlock.inputList.length; i++) {
+    var input = parentBlock.inputList[i];
+    if (input.connection && input.connection.type === Blockly.NEXT_STATEMENT) {
+      // Check if this substack contains our block
+      var firstBlock = input.connection.targetBlock();
+      if (firstBlock) {
+        var current = firstBlock;
+        while (current) {
+          if (current === block) {
+            return input.connection;
+          }
+          current = current.getNextBlock();
+        }
+      }
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Find the next substack after the given one in the parent block.
+ * @param {!Blockly.Connection} currentSubstack The current substack connection.
+ * @param {!Blockly.BlockSvg} parentBlock The parent block.
+ * @return {Blockly.Connection} The next statement connection or null.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.findNextSubstack_ = function(currentSubstack, parentBlock) {
+  if (!currentSubstack || !parentBlock) {
+    return null;
+  }
+
+  var foundCurrent = false;
+  for (var i = 0; i < parentBlock.inputList.length; i++) {
+    var input = parentBlock.inputList[i];
+    if (input.connection && input.connection.type === Blockly.NEXT_STATEMENT) {
+      if (foundCurrent) {
+        // This is the next substack
+        return input.connection;
+      }
+      if (input.connection === currentSubstack) {
+        foundCurrent = true;
+      }
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Find the previous substack before the given one in the parent block.
+ * @param {!Blockly.Connection} currentSubstack The current substack connection.
+ * @param {!Blockly.BlockSvg} parentBlock The parent block.
+ * @return {Blockly.Connection} The previous statement connection or null.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.findPreviousSubstack_ = function(currentSubstack, parentBlock) {
+  if (!currentSubstack || !parentBlock) {
+    return null;
+  }
+
+  var previousSubstack = null;
+  for (var i = 0; i < parentBlock.inputList.length; i++) {
+    var input = parentBlock.inputList[i];
+    if (input.connection && input.connection.type === Blockly.NEXT_STATEMENT) {
+      if (input.connection === currentSubstack) {
+        // Return the previous one we found
+        return previousSubstack;
+      }
+      previousSubstack = input.connection;
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Find the last block in a chain.
+ * @param {!Blockly.BlockSvg} block The first block in the chain.
+ * @return {!Blockly.BlockSvg} The last block in the chain.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.findLastBlockInChain_ = function(block) {
+  if (!block) {
+    return null;
+  }
+
+  var current = block;
+  while (current.getNextBlock()) {
+    current = current.getNextBlock();
+  }
+  return current;
+};
+
+/**
+ * Refresh the highlighting for the current hovered block.
+ * Used after moving blocks via keyboard navigation.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.refreshBlockHighlight_ = function() {
+  if (!this.lastHoveredBlock_) {
+    return;
+  }
+
+  // Save the current block reference before clearing
+  var block = this.lastHoveredBlock_;
+
+  // Clear all previous effects (this will set lastHoveredBlock_ to null)
+  this.clearBlockHoverEffects_();
+
+  // Restore the block reference
+  this.lastHoveredBlock_ = block;
+
+  // Re-initialize dimmed blocks array
+  if (!this.lastDimmedBlocks_) {
+    this.lastDimmedBlocks_ = [];
+  }
+
+  // Dim all parent blocks and their children
+  var parent = block.getParent();
+  while (parent) {
+    this.dimBlockAndChildren_(parent, 'blocklyDimmedContainer', this.lastDimmedBlocks_);
+    parent = parent.getParent();
+  }
+
+  // Dim all next blocks and their children
+  var nextBlock = block.getNextBlock();
+  while (nextBlock) {
+    this.dimBlockAndChildren_(nextBlock, 'blocklyDimmedNext', this.lastDimmedBlocks_);
+    nextBlock = nextBlock.getNextBlock();
+  }
+
+  // Highlight the current block and all its children (excluding next blocks)
+  // Use highlightBlockAndChildren_ which correctly handles parent-child relationships
+  this.highlightedBlocks_list_ = [];
+  this.highlightBlockAndChildren_(block);
+};
+
+/**
+ * Move block up: move to before the previous sibling block.
+ * If at the beginning of a substack, move to end of previous substack.
+ * @param {!Blockly.BlockSvg} block The block to move.
+ * @return {boolean} True if the move was successful.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.moveBlockUp_ = function(block) {
+  if (!block || !block.previousConnection) {
+    return false;
+  }
+
+  // Check if we have a previous sibling block (not parent block)
+  var previousBlock = null;
+  if (block.previousConnection && block.previousConnection.targetConnection) {
+    var targetConn = block.previousConnection.targetConnection;
+    var sourceBlock = targetConn.getSourceBlock();
+
+    // Check if targetConn is the nextConnection of the source block
+    // This distinguishes sibling relationships from parent-child relationships
+    if (targetConn === sourceBlock.nextConnection) {
+      previousBlock = sourceBlock;
+    }
+  }
+
+  // Case 1: Has a previous sibling block - swap with it
+  if (previousBlock) {
+    // Check if previousBlock can have blocks after it (has nextConnection)
+    // If not, swapping would cause the current block to be disconnected
+    if (!previousBlock.nextConnection) {
+      return false;
+    }
+
+    var eventsEnabled = Blockly.Events.isEnabled();
+    if (eventsEnabled) {
+      Blockly.Events.setGroup(true);
+    }
+
+    try {
+      // Find where previousBlock is connected (its parent connection)
+      var targetConnection = previousBlock.previousConnection.targetConnection;
+      if (!targetConnection) {
+        return false;
+      }
+
+      // Step 1: Unplug block, heal the stack (reconnect previousBlock to nextBlock)
+      block.unplug(true);
+
+      // Step 2: Unplug previousBlock (don't heal, we'll reconnect manually)
+      previousBlock.unplug(false);
+
+      // Step 3: Insert block at previousBlock's old position
+      targetConnection.connect(block.previousConnection);
+
+      // Step 4: Connect previousBlock after block
+      if (block.nextConnection && previousBlock.previousConnection) {
+        block.nextConnection.connect(previousBlock.previousConnection);
+      }
+
+      return true;
+    } finally {
+      if (eventsEnabled) {
+        Blockly.Events.setGroup(false);
+      }
+    }
+  }
+
+  // Case 2: No previous sibling - at beginning of substack, try to move to previous substack
+  var surroundParent = block.getSurroundParent();
+  if (!surroundParent) {
+    return false;
+  }
+
+  var currentSubstack = this.findCurrentSubstack_(block, surroundParent);
+  if (currentSubstack) {
+    var previousSubstack = this.findPreviousSubstack_(currentSubstack, surroundParent);
+    if (previousSubstack) {
+      var firstBlockInPrevSubstack = previousSubstack.targetBlock();
+
+      if (firstBlockInPrevSubstack) {
+        // Previous substack has blocks - find the last one
+        var lastBlock = this.findLastBlockInChain_(firstBlockInPrevSubstack);
+
+        // Check if the last block can have blocks after it
+        if (!lastBlock.nextConnection) {
+          // Last block is an end block (e.g., forever), cannot append to it
+          return false;
+        }
+
+        var eventsEnabled = Blockly.Events.isEnabled();
+        if (eventsEnabled) {
+          Blockly.Events.setGroup(true);
+        }
+
+        try {
+          // Unplug block from current substack
+          block.unplug(true);
+
+          // Append to the end of previous substack
+          if (lastBlock.nextConnection && block.previousConnection) {
+            lastBlock.nextConnection.connect(block.previousConnection);
+          }
+
+          return true;
+        } finally {
+          if (eventsEnabled) {
+            Blockly.Events.setGroup(false);
+          }
+        }
+      } else {
+        // Previous substack is empty - move to the empty substack
+        var eventsEnabled = Blockly.Events.isEnabled();
+        if (eventsEnabled) {
+          Blockly.Events.setGroup(true);
+        }
+
+        try {
+          // Unplug block from current substack
+          block.unplug(true);
+
+          // Connect to the empty previous substack
+          previousSubstack.connect(block.previousConnection);
+
+          return true;
+        } finally {
+          if (eventsEnabled) {
+            Blockly.Events.setGroup(false);
+          }
+        }
+      }
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Move block down: move to after the next sibling block.
+ * If at end of substack, move to beginning of next substack or after parent.
+ * @param {!Blockly.BlockSvg} block The block to move.
+ * @return {boolean} True if the move was successful.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.moveBlockDown_ = function(block) {
+  if (!block) {
+    return false;
+  }
+
+  var nextBlock = block.getNextBlock();
+
+  // Case 1: Has a next sibling block - swap with it
+  if (nextBlock) {
+    // Check if current block can have blocks after it (has nextConnection)
+    // If not (e.g., forever, delete this clone), cannot move down
+    if (!block.nextConnection) {
+      return false;
+    }
+
+    var eventsEnabled = Blockly.Events.isEnabled();
+    if (eventsEnabled) {
+      Blockly.Events.setGroup(true);
+    }
+
+    try {
+      // Step 1: Unplug block (heal the stack - connect previous to nextBlock)
+      block.unplug(true);
+
+      // Step 2: Insert block after nextBlock
+      // This will automatically handle reconnecting what was after nextBlock
+      if (nextBlock.nextConnection && block.previousConnection) {
+        nextBlock.nextConnection.connect(block.previousConnection);
+      }
+
+      return true;
+    } finally {
+      if (eventsEnabled) {
+        Blockly.Events.setGroup(false);
+      }
+    }
+  }
+
+  // Case 2: No next sibling - at end of substack
+  // If block has no nextConnection (e.g., forever, delete this clone), cannot move down
+  if (!block.nextConnection) {
+    return false;
+  }
+
+  var surroundParent = block.getSurroundParent();
+  if (!surroundParent) {
+    return false;
+  }
+
+  // Try to move to next substack first
+  var currentSubstack = this.findCurrentSubstack_(block, surroundParent);
+  if (currentSubstack) {
+    var nextSubstack = this.findNextSubstack_(currentSubstack, surroundParent);
+    if (nextSubstack) {
+      var eventsEnabled = Blockly.Events.isEnabled();
+      if (eventsEnabled) {
+        Blockly.Events.setGroup(true);
+      }
+
+      try {
+        // Unplug block from current substack
+        block.unplug(true);
+
+        // Insert at beginning of next substack
+        var firstBlockInNextSubstack = nextSubstack.targetBlock();
+        if (firstBlockInNextSubstack) {
+          // Insert before the first block
+          nextSubstack.disconnect();
+          nextSubstack.connect(block.previousConnection);
+          if (block.nextConnection && firstBlockInNextSubstack.previousConnection) {
+            block.nextConnection.connect(firstBlockInNextSubstack.previousConnection);
+          }
+        } else {
+          // Next substack is empty, just connect to it
+          nextSubstack.connect(block.previousConnection);
+        }
+
+        return true;
+      } finally {
+        if (eventsEnabled) {
+          Blockly.Events.setGroup(false);
+        }
+      }
+    }
+  }
+
+  // Case 3: No next substack, move to after parent's level
+  var eventsEnabled = Blockly.Events.isEnabled();
+  if (eventsEnabled) {
+    Blockly.Events.setGroup(true);
+  }
+
+  try {
+    // Step 1: Unplug block (heal the stack)
+    block.unplug(true);
+
+    // Step 2: Insert after surroundParent
+    // The connect method will handle pushing away any existing nextBlock
+    if (surroundParent.nextConnection && block.previousConnection) {
+      surroundParent.nextConnection.connect(block.previousConnection);
+    }
+
+    return true;
+  } finally {
+    if (eventsEnabled) {
+      Blockly.Events.setGroup(false);
+    }
+  }
+};
+
+/**
+ * Move block left: move to before the parent (surround) block.
+ * @param {!Blockly.BlockSvg} block The block to move.
+ * @return {boolean} True if the move was successful.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.moveBlockLeft_ = function(block) {
+  if (!block) {
+    return false;
+  }
+
+  var surroundParent = block.getSurroundParent();
+  if (!surroundParent || !surroundParent.previousConnection ||
+      !surroundParent.previousConnection.isConnected()) {
+    return false;
+  }
+
+  var eventsEnabled = Blockly.Events.isEnabled();
+  if (eventsEnabled) {
+    Blockly.Events.setGroup(true);
+  }
+
+  try {
+    // Find where surroundParent is connected
+    var targetConnection = surroundParent.previousConnection.targetConnection;
+
+    // Step 1: Unplug block (heal the stack)
+    block.unplug(true);
+
+    // Step 2: Unplug surroundParent (don't heal)
+    surroundParent.unplug(false);
+
+    // Step 3: Insert block where surroundParent was
+    targetConnection.connect(block.previousConnection);
+
+    // Step 4: Connect surroundParent after block
+    if (block.nextConnection && surroundParent.previousConnection) {
+      block.nextConnection.connect(surroundParent.previousConnection);
+    }
+
+    return true;
+  } finally {
+    if (eventsEnabled) {
+      Blockly.Events.setGroup(false);
+    }
+  }
+};
+
+/**
+ * Move block right: move to the first input position of the next sibling block.
+ * @param {!Blockly.BlockSvg} block The block to move.
+ * @return {boolean} True if the move was successful.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.moveBlockRight_ = function(block) {
+  if (!block) {
+    return false;
+  }
+
+  var nextBlock = block.getNextBlock();
+  if (!nextBlock) {
+    return false;
+  }
+
+  // Find the first statement input in the next block
+  var firstStatementConnection = nextBlock.getFirstStatementConnection();
+  if (!firstStatementConnection) {
+    return false;
+  }
+
+  var eventsEnabled = Blockly.Events.isEnabled();
+  if (eventsEnabled) {
+    Blockly.Events.setGroup(true);
+  }
+
+  try {
+    // Step 1: Unplug block (heal the stack - connect previous to nextBlock)
+    block.unplug(true);
+
+    // Step 2: Insert block into nextBlock's first statement position
+    // The connect method will automatically handle any blocks already there
+    if (block.previousConnection) {
+      firstStatementConnection.connect(block.previousConnection);
+    }
+
+    return true;
+  } finally {
+    if (eventsEnabled) {
+      Blockly.Events.setGroup(false);
+    }
+  }
+};
+
+/**
+ * Convert a block to an XML DOM element, but WITHOUT its next connection.
+ * This is similar to Blockly.Xml.blockToDom, but excludes the external next blocks.
+ * Internal next blocks (within substacks) are still included.
+ * @param {!Blockly.BlockSvg} block The block to convert.
+ * @return {!Element} XML DOM element representing the block.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.blockToDomWithoutNext_ = function(block) {
+  var element = goog.dom.createDom(block.isShadow() ? 'shadow' : 'block');
+  element.setAttribute('type', block.type);
+  element.setAttribute('id', block.id);
+
+  if (block.mutationToDom) {
+    var mutation = block.mutationToDom();
+    if (mutation && (mutation.hasChildNodes() || mutation.hasAttributes())) {
+      element.appendChild(mutation);
+    }
+  }
+
+  // Add all fields
+  Blockly.Xml.allFieldsToDom_(block, element);
+
+  // Add scratch comments
+  Blockly.Xml.scratchCommentToDom_(block, element);
+
+  if (block.data) {
+    var dataElement = goog.dom.createDom('data', null, block.data);
+    element.appendChild(dataElement);
+  }
+
+  // Process input connections (value inputs and statement inputs)
+  for (var i = 0, input; input = block.inputList[i]; i++) {
+    var container;
+    var empty = true;
+    if (input.type == Blockly.DUMMY_INPUT) {
+      continue;
+    } else {
+      var childBlock = input.connection.targetBlock();
+      if (input.type == Blockly.INPUT_VALUE) {
+        container = goog.dom.createDom('value');
+      } else if (input.type == Blockly.NEXT_STATEMENT) {
+        container = goog.dom.createDom('statement');
+      }
+      var shadow = input.connection.getShadowDom();
+      if (shadow && (!childBlock || !childBlock.isShadow())) {
+        var shadowClone = Blockly.Xml.cloneShadow_(shadow);
+        container.appendChild(shadowClone);
+      }
+      if (childBlock) {
+        // For statement inputs (substacks), we need to include the FULL chain
+        // of blocks within the substack (including their next connections)
+        if (input.type == Blockly.NEXT_STATEMENT) {
+          // Use the regular blockToDom to preserve the entire substack chain
+          container.appendChild(Blockly.Xml.blockToDom(childBlock, false));
+        } else {
+          // For value inputs, recursively call blockToDomWithoutNext_
+          container.appendChild(this.blockToDomWithoutNext_(childBlock));
+        }
+        empty = false;
+      }
+    }
+    container.setAttribute('name', input.name);
+    if (!empty) {
+      element.appendChild(container);
+    }
+  }
+
+  if (block.inputsInlineDefault != block.inputsInline) {
+    element.setAttribute('inline', block.inputsInline);
+  }
+  if (block.isCollapsed()) {
+    element.setAttribute('collapsed', true);
+  }
+  if (block.disabled) {
+    element.setAttribute('disabled', true);
+  }
+  if (!block.isDeletable() && !block.isShadow()) {
+    element.setAttribute('deletable', false);
+  }
+  if (!block.isMovable() && !block.isShadow()) {
+    element.setAttribute('movable', false);
+  }
+  if (!block.isEditable()) {
+    element.setAttribute('editable', false);
+  }
+
+  // IMPORTANT: Do NOT process block.nextConnection here!
+  // That's the key difference from Blockly.Xml.blockToDom.
+  // We want to exclude the external next blocks from the duplication.
+
+  return element;
+};
+
+/**
+ * Duplicate the selected block and place it right after the original.
+ * VSCode-style: Cmd/Ctrl + D duplicates the current line.
+ * Only duplicates the highlighted blocks (selected block and its children),
+ * NOT the external next blocks.
+ * @return {boolean} True if the duplication was successful.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.duplicateSelectedBlock_ = function() {
+  if (!this.selectedBlock_) {
+    return false;
+  }
+
+  var block = this.selectedBlock_;
+
+  // Create XML from the selected block WITHOUT next blocks
+  // This ensures we only copy the highlighted blocks (block + children)
+  var blockXml = this.blockToDomWithoutNext_(block);
+
+  // Clone the XML to create a new independent copy
+  var newBlockXml = blockXml.cloneNode(true);
+
+  var eventsEnabled = Blockly.Events.isEnabled();
+  if (eventsEnabled) {
+    Blockly.Events.setGroup(true);
+  }
+
+  try {
+    // Create new block from XML
+    var newBlock = Blockly.Xml.domToBlock(newBlockXml, this);
+
+    // Position the new block after the original block
+    if (block.nextConnection && newBlock.previousConnection) {
+      // Original block has a next block - insert the duplicate between them
+      var nextBlock = block.getNextBlock();
+
+      if (nextBlock) {
+        // Disconnect the next block
+        block.nextConnection.disconnect();
+
+        // Connect new block after original
+        block.nextConnection.connect(newBlock.previousConnection);
+
+        // Connect original next block after new block
+        if (newBlock.nextConnection && nextBlock.previousConnection) {
+          newBlock.nextConnection.connect(nextBlock.previousConnection);
+        }
+      } else {
+        // No next block, just connect the duplicate after original
+        block.nextConnection.connect(newBlock.previousConnection);
+      }
+    } else {
+      // Original block has no nextConnection (e.g., reporter, end block)
+      // Place the duplicate at a slight offset
+      var xy = block.getRelativeToSurfaceXY();
+      newBlock.moveBy(xy.x + 20, xy.y + 20);
+    }
+
+    // Select the newly created block
+    this.selectBlock_(newBlock);
+
+    return true;
+  } catch (e) {
+    console.error('Error duplicating block:', e);
+    return false;
+  } finally {
+    if (eventsEnabled) {
+      Blockly.Events.setGroup(false);
+    }
+  }
+};
+
+/**
+ * Delete the currently selected block.
+ * @return {boolean} True if the deletion was successful.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.deleteSelectedBlock_ = function() {
+  if (!this.selectedBlock_) {
+    return false;
+  }
+
+  var block = this.selectedBlock_;
+
+  // Check if block is deletable
+  if (!block.isDeletable()) {
+    return false;
+  }
+
+  // Deselect before deleting
+  this.deselectBlock_();
+
+  // Delete the block
+  var eventsEnabled = Blockly.Events.isEnabled();
+  if (eventsEnabled) {
+    Blockly.Events.setGroup(true);
+  }
+
+  try {
+    block.dispose(true, true);
+    return true;
+  } catch (e) {
+    console.error('Error deleting block:', e);
+    return false;
+  } finally {
+    if (eventsEnabled) {
+      Blockly.Events.setGroup(false);
+    }
+  }
 };
 
 /**

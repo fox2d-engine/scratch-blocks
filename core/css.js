@@ -394,6 +394,114 @@ Blockly.Css.CONTENT = [
     'display: none;',
   '}',
 
+  /* Current selected block (blocklySelected) should have NO filter effects */
+  /* Remove dim filter from selected block and its non-next-block children */
+  '.blocklySelected > .blocklyPath {',
+    'filter: none !important;',
+  '}',
+
+  '.blocklySelected > :not(.blocklyDraggable) .blocklyText {',
+    'filter: none !important;',
+  '}',
+
+  '.blocklySelected > :not(.blocklyDraggable) image {',
+    'filter: none !important;',
+  '}',
+
+  '.blocklySelected > :not(.blocklyDraggable) rect {',
+    'filter: none !important;',
+  '}',
+
+  /* Also support blocklyHoverHighlight for compatibility */
+  '.blocklyHoverHighlight > .blocklyPath {',
+    'filter: none !important;',
+  '}',
+
+  '.blocklyHoverHighlight > :not(.blocklyDraggable) .blocklyText {',
+    'filter: none !important;',
+  '}',
+
+  '.blocklyHoverHighlight > :not(.blocklyDraggable) image {',
+    'filter: none !important;',
+  '}',
+
+  '.blocklyHoverHighlight > :not(.blocklyDraggable) rect {',
+    'filter: none !important;',
+  '}',
+
+  /* Dim all blocks in selection mode - MUST come before highlight rules */
+  /* Use !important to ensure dimmed blocks stay dimmed even inside selected blocks */
+  '.blocklyDimmedContainer .blocklyPath {',
+    'filter: brightness(0.35) saturate(0.4) opacity(0.5) !important;',
+  '}',
+
+  /* Keep text readable - light dimming only */
+  '.blocklyDimmedContainer .blocklyText {',
+    'filter: brightness(0.75) !important;',
+  '}',
+
+  '.blocklyDimmedContainer image {',
+    'filter: brightness(0.35) saturate(0.4) opacity(0.5) !important;',
+  '}',
+
+  '.blocklyDimmedContainer rect {',
+    'filter: brightness(0.35) saturate(0.4) opacity(0.5) !important;',
+  '}',
+
+  /* Remove dim from highlighted blocks - MUST come after dim rules to override */
+  /* Use higher specificity by combining both classes */
+
+  /* Highlight the block's main path */
+  '.blocklyDraggable.blocklyHoverHighlight > .blocklyPath {',
+    'filter: none !important;',
+  '}',
+
+  /* Highlight the block's text labels */
+  '.blocklyDraggable.blocklyHoverHighlight > .blocklyText {',
+    'filter: none !important;',
+  '}',
+
+  /* Highlight arguments and their contents (they don't have blocklyDraggable class) */
+  '.blocklyDraggable.blocklyHoverHighlight > :not(.blocklyDraggable) .blocklyPath,',
+  '.blocklyDraggable.blocklyHoverHighlight > :not(.blocklyDraggable) .blocklyText,',
+  '.blocklyDraggable.blocklyHoverHighlight > :not(.blocklyDraggable) image,',
+  '.blocklyDraggable.blocklyHoverHighlight > :not(.blocklyDraggable) rect {',
+    'filter: none !important;',
+  '}',
+
+  /* Also handle blocklySelected for compatibility */
+  '.blocklyDraggable.blocklySelected > .blocklyPath {',
+    'filter: none !important;',
+  '}',
+
+  '.blocklyDraggable.blocklySelected > .blocklyText {',
+    'filter: none !important;',
+  '}',
+
+  '.blocklyDraggable.blocklySelected > :not(.blocklyDraggable) .blocklyPath,',
+  '.blocklyDraggable.blocklySelected > :not(.blocklyDraggable) .blocklyText,',
+  '.blocklyDraggable.blocklySelected > :not(.blocklyDraggable) image,',
+  '.blocklyDraggable.blocklySelected > :not(.blocklyDraggable) rect {',
+    'filter: none !important;',
+  '}',
+
+  /* Dim next/following blocks - affect all descendants (highest priority) */
+  '.blocklyDimmedNext .blocklyPath {',
+    'filter: brightness(0.35) saturate(0.4) opacity(0.5) !important;',
+  '}',
+
+  '.blocklyDimmedNext .blocklyText {',
+    'filter: brightness(0.75) !important;',
+  '}',
+
+  '.blocklyDimmedNext image {',
+    'filter: brightness(0.35) saturate(0.4) opacity(0.5) !important;',
+  '}',
+
+  '.blocklyDimmedNext rect {',
+    'filter: brightness(0.35) saturate(0.4) opacity(0.5) !important;',
+  '}',
+
   '.blocklyDraggable {',
     /* backup for browsers (e.g. IE11) that don't support grab */
     'cursor: url("<<<PATH>>>/handopen.cur"), auto;',

@@ -677,7 +677,14 @@ Blockly.Gesture.prototype.handleFlyoutStart = function(e, flyout) {
       'Tried to call gesture.handleFlyoutStart, but the gesture had already ' +
       'been started.');
   this.setStartFlyout_(flyout);
-  this.handleWsStart(e, flyout.getWorkspace());
+
+  // Exit selection mode when dragging a block from the flyout/toolbox
+  var workspace = flyout.getWorkspace();
+  if (workspace && workspace.selectionMode_) {
+    workspace.toggleSelectionMode();
+  }
+
+  this.handleWsStart(e, workspace);
 };
 
 /**
@@ -750,7 +757,11 @@ Blockly.Gesture.prototype.doBlockClick_ = function() {
     // A field is being edited if either the WidgetDiv or DropDownDiv is currently open.
     // If a field is being edited, don't fire any click events.
     var fieldEditing = Blockly.WidgetDiv.isVisible() || Blockly.DropDownDiv.isVisible();
-    if (!fieldEditing) {
+
+    // In selection mode, don't fire click events (prevents double-click execution)
+    var inSelectionMode = this.startWorkspace_ && this.startWorkspace_.selectionMode_;
+
+    if (!fieldEditing && !inSelectionMode) {
       Blockly.Events.fire(
           new Blockly.Events.Ui(this.startBlock_, 'click', undefined, undefined));
       // Scratch-specific: also fire a "stack click" event for this stack.

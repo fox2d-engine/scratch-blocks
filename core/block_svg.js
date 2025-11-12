@@ -1471,6 +1471,23 @@ Blockly.BlockSvg.prototype.removeSelect = function() {
 };
 
 /**
+ * Add hover highlight to this block when modifier key is pressed.
+ */
+Blockly.BlockSvg.prototype.addHoverHighlight = function() {
+  Blockly.utils.addClass(
+      /** @type {!Element} */ (this.svgGroup_), 'blocklyHoverHighlight');
+};
+
+/**
+ * Remove hover highlight from this block.
+ */
+Blockly.BlockSvg.prototype.removeHoverHighlight = function() {
+  Blockly.utils.removeClass(
+      /** @type {!Element} */ (this.svgGroup_), 'blocklyHoverHighlight');
+};
+
+
+/**
  * Update the cursor over this block by adding or removing a class.
  * @param {boolean} letMouseThrough True if the blocks should ignore pointer
  *     events, false otherwise.
